@@ -6,7 +6,7 @@ const BASE = "https://api.example.com";
 function makeAllowResponse() {
   return {
     userId: "u1", agentId: "gmail-tools", authorizationId: "auth_1",
-    authorizationExpiresAt: "2026-12-31T00:00:00Z", policyVersion: "2026-04-19.1",
+    authorizationExpiresAt: "2026-12-31T00:00:00Z", engineVersion: "2026-04-19.1",
     results: {
       read_email: {
         decision: "allow" as const,
@@ -35,7 +35,7 @@ function makeAllowResponse() {
 function makeDenyResponse() {
   return {
     userId: "u1", agentId: "gmail-tools", authorizationId: "auth_1",
-    authorizationExpiresAt: "2026-12-31T00:00:00Z", policyVersion: "2026-04-19.1",
+    authorizationExpiresAt: "2026-12-31T00:00:00Z", engineVersion: "2026-04-19.1",
     results: {
       send_email: {
         decision: "deny" as const,
@@ -54,7 +54,7 @@ function makeDenyResponse() {
 function makeConfirmResponse() {
   return {
     userId: "u1", agentId: "gmail-tools", authorizationId: "auth_1",
-    authorizationExpiresAt: "2026-12-31T00:00:00Z", policyVersion: "2026-04-19.1",
+    authorizationExpiresAt: "2026-12-31T00:00:00Z", engineVersion: "2026-04-19.1",
     results: {
       send_email: {
         decision: "confirm" as const,
@@ -75,7 +75,7 @@ function makeConfirmResponse() {
 function makeEscalateResponse() {
   return {
     userId: "u1", agentId: "gmail-tools", authorizationId: "auth_1",
-    authorizationExpiresAt: "2026-12-31T00:00:00Z", policyVersion: "2026-04-19.1",
+    authorizationExpiresAt: "2026-12-31T00:00:00Z", engineVersion: "2026-04-19.1",
     results: {
       delete_candidate: {
         decision: "escalate" as const,
