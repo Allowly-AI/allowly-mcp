@@ -1,15 +1,15 @@
 {
   "name": "@allowly/mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Allowly guardrail middleware for MCP tool calls",
+  "type": "module",
   "main": "./dist/index.js",
-  "module": "./dist/index.mjs",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "import": "./dist/index.js"
     }
   },
   "files": [
@@ -20,10 +20,10 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --clean --external @allowly/sdk --external @modelcontextprotocol/sdk",
+    "build": "tsup src/index.ts --format esm --dts --clean --external @allowly/sdk --external @modelcontextprotocol/sdk",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "prepack": "npm run build"
+    "prepack": "npm run build && node --input-type=module -e \"const pkg = await import('@allowly/mcp'); if (typeof pkg.AllowlyMCPMiddleware !== 'function') process.exit(1)\""
   },
   "peerDependencies": {
     "@allowly/sdk": "^0.1.1",
@@ -38,7 +38,7 @@
     "vitest": "^1.6.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "license": "MIT"
 }

@@ -5,7 +5,10 @@
  *   const mcp = new McpServer({ name: "my-agent", version: "1.0" });
  *   const allowly = new AllowlyMCPMiddleware({
  *     apiKey: process.env.ALLOWLY_KEY!,
- *     userIdFn: ({ request }) => request.auth.userId,
+ *     userIdFn: ({ extra }) => {
+ *       const userId = extra.authInfo?.extra?.userId;
+ *       return typeof userId === "string" ? userId : null;
+ *     },
  *     authorizationIdFn: (userId) => db.getAuthorizationId(userId),
  *   });
  *   allowly.attach(mcp.server);
@@ -17,14 +20,24 @@
  */
 import { Allowly } from "@allowly/sdk";
 import type { ActionCheckResultConfirm, ActionCheckResultEscalate } from "@allowly/sdk";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import {
+  CallToolRequestSchema,
+  type CallToolRequest,
+  type ServerNotification,
+  type ServerRequest,
+} from "@modelcontextprotocol/sdk/types.js";
 
 type AuthorizationIdFn = (userId: string) => string | null | Promise<string | null>;
 type UserIdFn = (context: MCPAuthorizationContext) => string | null | Promise<string | null>;
+type HandlerExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
 export interface MCPAuthorizationContext {
   toolName: string;
   arguments: Record<string, unknown>;
-  request?: unknown;
+  request: CallToolRequest;
+  extra: HandlerExtra;
 }
 
 export interface AllowlyMCPMiddlewareOptions {
@@ -74,24 +87,19 @@ export class AllowlyMCPMiddleware {
    * Wraps the existing `CallToolRequestSchema` handler so every tool call is
    * gated on an Allowly check before the original handler runs.
    */
-  attach(server: {
-    setRequestHandler: (schema: unknown, handler: (req: unknown) => Promise<unknown>) => void;
-    _requestHandlers?: Map<string, unknown>;
-  }): void {
-    // Import lazily so the module loads cleanly in environments without @modelcontextprotocol/sdk.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { CallToolRequestSchema } = require("@modelcontextprotocol/sdk/types.js");
-
-    const originalHandlers: Map<string, (req: unknown) => Promise<unknown>> =
+  attach(server: Pick<Server, "setRequestHandler">): void {
+    const originalHandlers: Map<string, (req: CallToolRequest, extra: HandlerExtra) => Promise<any>> =
       (server as any)._requestHandlers ?? new Map();
     const originalHandler = originalHandlers.get("tools/call") as
-      | ((req: unknown) => Promise<unknown>)
+      | ((req: CallToolRequest, extra: HandlerExtra) => Promise<any>)
       | undefined;
+    if (!originalHandler) {
+      throw new Error("Register MCP tools before attaching Allowly middleware");
+    }
 
-    server.setRequestHandler(CallToolRequestSchema, async (req: unknown) => {
-      const r = req as { params: { name: string; arguments?: Record<string, unknown> } };
-      const args = r.params.arguments ?? {};
-      const context = { toolName: r.params.name, arguments: args, request: req };
+    server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+      const args = req.params.arguments ?? {};
+      const context = { toolName: req.params.name, arguments: args, request: req, extra };
 
       const authorizationId = await this.resolveAuthorizationId(context);
       if (authorizationId === null) {
@@ -101,12 +109,11 @@ export class AllowlyMCPMiddleware {
         };
       }
 
-      const result = await this.client.check({ authorizationId, actions: [r.params.name] });
-      const actionResult = result.results[r.params.name];
+      const result = await this.client.check({ authorizationId, actions: [req.params.name] });
+      const actionResult = result.results[req.params.name];
 
       if (actionResult.decision === "allow") {
-        if (originalHandler) return originalHandler(req);
-        return { content: [], isError: false };
+        return originalHandler(req, extra);
       }
 
       if (actionResult.decision === "confirm") {
