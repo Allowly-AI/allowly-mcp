@@ -20,22 +20,22 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean --external @allowly/sdk --external @modelcontextprotocol/sdk",
+    "build": "tsup src/index.ts --format esm --clean --external @allowly/sdk --external @modelcontextprotocol/sdk && tsc --emitDeclarationOnly",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "prepack": "npm run build && node --input-type=module -e \"const pkg = await import('@allowly/mcp'); if (typeof pkg.AllowlyMCPMiddleware !== 'function') process.exit(1)\""
   },
   "peerDependencies": {
-    "@allowly/sdk": "^0.1.2",
+    "@allowly/sdk": "^0.1.2 || ^0.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "devDependencies": {
-    "@allowly/sdk": "^0.1.2",
+    "@allowly/sdk": "file:../allowly-sdk-ts",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^20.19.40",
-    "tsup": "^8.0.0",
-    "typescript": "^5.4.0",
-    "vitest": "^1.6.0"
+    "tsup": "^8.5.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=20"
