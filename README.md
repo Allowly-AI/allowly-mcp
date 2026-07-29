@@ -43,7 +43,8 @@ Register tools before calling `attach()`; the middleware fails fast when there i
 
 - `allow`: the original MCP tool handler runs.
 - `deny`: the middleware returns an MCP error response with the Allowly reason.
-- `confirm`: the middleware returns a confirmation payload with `confirm_nonce`.
+- `confirm`: the middleware returns a confirmation payload with `confirm_nonce`,
+  `confirm_expires_at`, and `confirm_prompt_hint`; do not present an expired prompt.
 - `escalate`: the middleware returns an escalation payload with `escalation_id`.
 
 The middleware calls:
