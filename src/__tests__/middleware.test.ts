@@ -9,7 +9,12 @@ type Decision = "allow" | "deny" | "confirm" | "escalate";
 function actionResult(decision: Decision) {
   const base = { decision, reason: `test_${decision}` };
   if (decision === "confirm") {
-    return { ...base, confirmNonce: "cnf_1", confirmPromptHint: "send_email" };
+    return {
+      ...base,
+      confirmNonce: "cnf_1",
+      confirmExpiresAt: "2026-07-29T12:00:00.000Z",
+      confirmPromptHint: "send_email",
+    };
   }
   if (decision === "escalate") {
     return {
@@ -83,7 +88,7 @@ describe("AllowlyMCPMiddleware against a real McpServer", () => {
 
   it.each([
     ["deny", {}],
-    ["confirm", { confirm_nonce: "cnf_1", confirm_prompt_hint: "send_email" }],
+    ["confirm", { confirm_nonce: "cnf_1", confirm_expires_at: "2026-07-29T12:00:00.000Z", confirm_prompt_hint: "send_email" }],
     ["escalate", { escalation_id: "esc_1", escalation_to: "compliance" }],
   ] as const)("blocks a %s decision with its payload", async (decision, expected) => {
     const { result, toolRan } = await gated(decision);

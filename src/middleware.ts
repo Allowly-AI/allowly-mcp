@@ -4,7 +4,7 @@
  * McpServer (high-level) usage:
  *   const mcp = new McpServer({ name: "my-agent", version: "1.0" });
  *   const allowly = new AllowlyMCPMiddleware({
- *     apiKey: process.env.ALLOWLY_KEY!,
+ *     apiKey: process.env.ALLOWLY_API_KEY!,
  *     userIdFn: ({ extra }) => {
  *       const userId = extra.authInfo?.extra?.userId;
  *       return typeof userId === "string" ? userId : null;
@@ -125,6 +125,7 @@ export class AllowlyMCPMiddleware {
               decision: "confirm",
               reason: c.reason,
               confirm_nonce: c.confirmNonce,
+              confirm_expires_at: c.confirmExpiresAt,
               confirm_prompt_hint: c.confirmPromptHint,
             }),
           }],
