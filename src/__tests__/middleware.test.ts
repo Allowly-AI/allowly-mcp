@@ -100,18 +100,12 @@ describe("AllowlyMCPMiddleware against a real McpServer", () => {
   });
 
   it("denies missing identity and ignores caller-supplied identity by default", async () => {
-    for (const identity of ["missing", "untrusted-argument"] as const) {
+    for (const identity of ["missing", "untrusted-argument", "legacy-argument"] as const) {
       const { check, result, toolRan } = await gated("allow", identity);
       expect(toolRan).toBe(0);
       expect(check).not.toHaveBeenCalled();
       expect(JSON.parse(((result as any).content[0] as { text: string }).text).decision).toBe("deny");
     }
-  });
-
-  it("can opt into legacy user_id arguments", async () => {
-    const { check, toolRan } = await gated("allow", "legacy-argument");
-    expect(toolRan).toBe(1);
-    expect(check).toHaveBeenCalledWith({ authorizationId: "auth_1", actions: ["send_email"] });
   });
 
   it("requires tools to be registered before attach", () => {

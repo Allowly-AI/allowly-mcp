@@ -61,5 +61,3 @@ Authorization creation stays outside this package. Store the user's Allowly auth
 ## User IDs
 
 By default, the middleware does not trust tool arguments for identity. Provide `userIdFn` and read identity from the MCP handler's trusted `extra` context, such as `extra.authInfo` or `extra.sessionId`.
-
-`allowUserIdArgument` exists only for simple local demos and legacy wrappers. Avoid it for production systems.

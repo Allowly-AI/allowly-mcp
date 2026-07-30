@@ -1,6 +1,6 @@
 {
   "name": "@allowly/mcp",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Allowly guardrail middleware for MCP tool calls",
   "type": "module",
   "main": "./dist/index.js",
@@ -26,7 +26,7 @@
     "prepack": "npm run build && node --input-type=module -e \"const pkg = await import('@allowly/mcp'); if (typeof pkg.AllowlyMCPMiddleware !== 'function') process.exit(1)\""
   },
   "peerDependencies": {
-    "@allowly/sdk": "^0.1.2 || ^0.2.0",
+    "@allowly/sdk": "^0.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "devDependencies": {
