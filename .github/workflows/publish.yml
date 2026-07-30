@@ -24,7 +24,7 @@ jobs:
         with:
           repository: Allowly-AI/allowly-sdk-ts
           # ponytail: bootstrap pin; remove after the devDependency uses npm.
-          ref: 15469c1cd4b4cd0f6a2967254cf86cc468ffee6a
+          ref: 4565075175a335c91fa82fa407689d5c65e6636b
           path: allowly-sdk-ts
       - name: Require tag commit on main
         working-directory: allowly_mcp
