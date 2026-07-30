@@ -27,11 +27,11 @@
   },
   "peerDependencies": {
     "@allowly/sdk": "^0.2.0",
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
-    "@allowly/sdk": "file:../allowly-sdk-ts",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@allowly/sdk": "^0.2.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^20.19.40",
     "tsup": "^8.5.1",
     "typescript": "^7.0.2",

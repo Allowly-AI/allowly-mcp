@@ -14,31 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: allowly_mcp
-      - uses: actions/checkout@v4
-        with:
-          repository: Allowly-AI/allowly-sdk-ts
-          # ponytail: bootstrap pin; remove after the devDependency uses npm.
-          ref: 4565075175a335c91fa82fa407689d5c65e6636b
-          path: allowly-sdk-ts
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Build local SDK dependency
-        working-directory: allowly-sdk-ts
-        run: |
-          npm ci
-          npm run build
       - name: Install dependencies
-        working-directory: allowly_mcp
         run: npm ci
       - name: Typecheck
-        working-directory: allowly_mcp
         run: npm run typecheck
       - name: Test
-        working-directory: allowly_mcp
         run: npm test
       - name: Build
-        working-directory: allowly_mcp
         run: npm run build
