@@ -43,7 +43,8 @@ Register tools before calling `attach()`; the middleware fails fast when there i
 
 - `allow`: the original MCP tool handler runs.
 - `deny`: the middleware returns an MCP error response with the Allowly reason.
-- `confirm`: the middleware returns a confirmation payload with `confirm_nonce`.
+- `confirm`: the middleware returns a confirmation payload with `confirm_nonce`,
+  `confirm_expires_at`, and `confirm_prompt_hint`; do not present an expired prompt.
 - `escalate`: the middleware returns an escalation payload with `escalation_id`.
 
 The middleware calls:
@@ -60,5 +61,3 @@ Authorization creation stays outside this package. Store the user's Allowly auth
 ## User IDs
 
 By default, the middleware does not trust tool arguments for identity. Provide `userIdFn` and read identity from the MCP handler's trusted `extra` context, such as `extra.authInfo` or `extra.sessionId`.
-
-`allowUserIdArgument` exists only for simple local demos and legacy wrappers. Avoid it for production systems.

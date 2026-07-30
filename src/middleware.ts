@@ -45,14 +45,12 @@ export interface AllowlyMCPMiddlewareOptions {
   authorizationIdFn: AuthorizationIdFn;
   userIdFn?: UserIdFn;
   baseUrl?: string;
-  allowUserIdArgument?: boolean;
 }
 
 export class AllowlyMCPMiddleware {
   readonly client: Allowly;
   private readonly authorizationIdFn: AuthorizationIdFn;
   private readonly userIdFn?: UserIdFn;
-  private readonly allowUserIdArgument: boolean;
 
   constructor(opts: AllowlyMCPMiddlewareOptions) {
     this.client = new Allowly({
@@ -61,7 +59,6 @@ export class AllowlyMCPMiddleware {
     });
     this.authorizationIdFn = opts.authorizationIdFn;
     this.userIdFn = opts.userIdFn;
-    this.allowUserIdArgument = opts.allowUserIdArgument ?? false;
   }
 
   private async resolveAuthorizationId(context: MCPAuthorizationContext): Promise<string | null> {
@@ -73,10 +70,6 @@ export class AllowlyMCPMiddleware {
   private async resolveUserId(context: MCPAuthorizationContext): Promise<string | null> {
     if (this.userIdFn) {
       return this.userIdFn(context);
-    }
-    if (this.allowUserIdArgument) {
-      const userId = context.arguments["user_id"];
-      return typeof userId === "string" && userId ? userId : null;
     }
     return null;
   }
