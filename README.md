@@ -58,6 +58,15 @@ allowly.check({
 
 Authorization creation stays outside this package. Store the user's Allowly authorization ID in your app, then resolve it in `authorizationIdFn`.
 
+## SEAL evidence is explicit
+
+This middleware does not send MCP tool arguments or results to SEAL. If your
+workflow needs signed evidence for a JSON record, post that chosen record to a
+private managed SEAL webhook after the tool completes. Keep the original JSON
+in your workflow and keep the webhook URL out of MCP arguments, logs, tickets,
+and source control. The webhook path and retry rules are documented at
+[allowly.ai/docs/api-reference/seal](https://allowly.ai/docs/api-reference/seal/).
+
 ## User IDs
 
 By default, the middleware does not trust tool arguments for identity. Provide `userIdFn` and read identity from the MCP handler's trusted `extra` context, such as `extra.authInfo` or `extra.sessionId`.
