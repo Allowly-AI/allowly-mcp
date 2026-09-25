@@ -86,6 +86,61 @@ describe("AllowlyMCPMiddleware against a real McpServer", () => {
     expect(result.check).toHaveBeenCalledWith({ authorizationId: "auth_1", actions: ["send_email"] });
   });
 
+  it("maps exact action inputs and trusted identity without copying arbitrary arguments", async () => {
+    const mcp = new McpServer({ name: "test-server", version: "1.0.0" });
+    let toolRan = 0;
+    mcp.registerTool("send_email", {}, async () => {
+      toolRan++;
+      return { content: [{ type: "text", text: "sent" }] };
+    });
+    const middleware = new AllowlyMCPMiddleware({
+      apiKey: "test-key",
+      userIdFn: () => "u1",
+      authorizationIdFn: () => "auth_1",
+      agentTokenFn: () => "trusted-jwt",
+      checkInputFn: ({ arguments: args }) => ({
+        action: "email.send",
+        resource: `gmail:thread:${String(args.thread_id)}`,
+        context: { recipient_domain: String(args.recipient_domain) },
+        clientTimestamp: "2026-09-24T20:01:02.123Z",
+        idempotencyKey: "send-123",
+      }),
+    });
+    const check = vi.spyOn(middleware.client, "check").mockResolvedValue({
+      results: { "email.send": actionResult("allow") },
+    } as any);
+    middleware.attach(mcp.server);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverTransport);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await client.connect(clientTransport);
+    try {
+      await client.callTool({
+        name: "send_email",
+        arguments: {
+          thread_id: "abc",
+          recipient_domain: "example.com",
+          secret_body: "not policy context",
+        },
+      });
+      expect(toolRan).toBe(1);
+      expect(check).toHaveBeenCalledWith({
+        authorizationId: "auth_1",
+        actions: ["email.send"],
+        resource: "gmail:thread:abc",
+        context: { recipient_domain: "example.com" },
+        clientTimestamp: "2026-09-24T20:01:02.123Z",
+        idempotencyKey: "send-123",
+        agentToken: "trusted-jwt",
+      });
+      expect(JSON.stringify(check.mock.calls[0][0])).not.toContain("secret_body");
+    } finally {
+      await client.close();
+      await mcp.close();
+    }
+  });
+
   it.each([
     ["deny", {}],
     ["confirm", { confirm_nonce: "cnf_1", confirm_expires_at: "2026-07-29T12:00:00.000Z", confirm_prompt_hint: "send_email" }],
@@ -105,6 +160,44 @@ describe("AllowlyMCPMiddleware against a real McpServer", () => {
       expect(toolRan).toBe(0);
       expect(check).not.toHaveBeenCalled();
       expect(JSON.parse(((result as any).content[0] as { text: string }).text).decision).toBe("deny");
+    }
+  });
+
+  it.each([
+    ["agent_token_not_found", () => null],
+    ["agent_token_not_found", () => ""],
+    ["agent_token_unavailable", () => Promise.reject(new Error("secret provider detail"))],
+  ] as const)("fails closed for an invalid configured token provider: %s", async (reason, provider) => {
+    const mcp = new McpServer({ name: "test-server", version: "1.0.0" });
+    let toolRan = 0;
+    mcp.registerTool("send_email", {}, async () => {
+      toolRan++;
+      return { content: [{ type: "text", text: "sent" }] };
+    });
+    const middleware = new AllowlyMCPMiddleware({
+      apiKey: "test-key",
+      userIdFn: () => "u1",
+      authorizationIdFn: () => "auth_1",
+      agentTokenFn: provider,
+    });
+    const check = vi.spyOn(middleware.client, "check");
+    middleware.attach(mcp.server);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverTransport);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await client.connect(clientTransport);
+    try {
+      const result = await client.callTool({ name: "send_email", arguments: {} });
+      const body = JSON.parse(((result as any).content[0] as { text: string }).text);
+      expect(result.isError).toBe(true);
+      expect(body).toEqual({ decision: "deny", reason });
+      expect(JSON.stringify(result)).not.toContain("secret provider detail");
+      expect(toolRan).toBe(0);
+      expect(check).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await mcp.close();
     }
   });
 

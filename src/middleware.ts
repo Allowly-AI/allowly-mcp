@@ -31,6 +31,7 @@ import {
 
 type AuthorizationIdFn = (userId: string) => string | null | Promise<string | null>;
 type UserIdFn = (context: MCPAuthorizationContext) => string | null | Promise<string | null>;
+type AgentTokenFn = (context: MCPAuthorizationContext) => string | null | Promise<string | null>;
 type HandlerExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
 export interface MCPAuthorizationContext {
@@ -40,10 +41,30 @@ export interface MCPAuthorizationContext {
   extra: HandlerExtra;
 }
 
+export interface MCPCheckInput {
+  /** Policy action to evaluate. Defaults to the exact MCP tool name. */
+  action?: string;
+  /** Exact resource derived by the server from the tool request. */
+  resource?: string;
+  /** Explicit policy context selected by the server. Tool arguments are never copied automatically. */
+  context?: Record<string, unknown>;
+  clientTimestamp?: Date | string;
+  estimatedCostMicros?: number;
+  idempotencyKey?: string;
+}
+
+type CheckInputFn = (
+  context: MCPAuthorizationContext,
+) => MCPCheckInput | Promise<MCPCheckInput>;
+
 export interface AllowlyMCPMiddlewareOptions {
   apiKey: string;
   authorizationIdFn: AuthorizationIdFn;
   userIdFn?: UserIdFn;
+  /** Resolve a trusted Auth0 M2M token from server-side request state. */
+  agentTokenFn?: AgentTokenFn;
+  /** Map this exact tool request to the policy action/resource/context that will be checked. */
+  checkInputFn?: CheckInputFn;
   baseUrl?: string;
 }
 
@@ -51,6 +72,8 @@ export class AllowlyMCPMiddleware {
   readonly client: Allowly;
   private readonly authorizationIdFn: AuthorizationIdFn;
   private readonly userIdFn?: UserIdFn;
+  private readonly agentTokenFn?: AgentTokenFn;
+  private readonly checkInputFn?: CheckInputFn;
 
   constructor(opts: AllowlyMCPMiddlewareOptions) {
     this.client = new Allowly({
@@ -59,6 +82,8 @@ export class AllowlyMCPMiddleware {
     });
     this.authorizationIdFn = opts.authorizationIdFn;
     this.userIdFn = opts.userIdFn;
+    this.agentTokenFn = opts.agentTokenFn;
+    this.checkInputFn = opts.checkInputFn;
   }
 
   private async resolveAuthorizationId(context: MCPAuthorizationContext): Promise<string | null> {
@@ -102,8 +127,70 @@ export class AllowlyMCPMiddleware {
         };
       }
 
-      const result = await this.client.check({ authorizationId, actions: [req.params.name] });
-      const actionResult = result.results[req.params.name];
+      let checkInput: MCPCheckInput;
+      try {
+        checkInput = this.checkInputFn
+          ? await this.checkInputFn(context)
+          : {};
+      } catch {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "check_input_unavailable" }) }],
+          isError: true,
+        };
+      }
+      if (!checkInput || typeof checkInput !== "object") {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "check_input_invalid" }) }],
+          isError: true,
+        };
+      }
+      const action = checkInput.action ?? req.params.name;
+      if (typeof action !== "string" || !action.trim()) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "check_action_invalid" }) }],
+          isError: true,
+        };
+      }
+      let agentToken: string | null = null;
+      if (this.agentTokenFn) {
+        try {
+          agentToken = await this.agentTokenFn(context);
+        } catch {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "agent_token_unavailable" }) }],
+            isError: true,
+          };
+        }
+        if (typeof agentToken !== "string" || !agentToken.trim()) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "agent_token_not_found" }) }],
+            isError: true,
+          };
+        }
+      }
+      const result = await this.client.check({
+        authorizationId,
+        actions: [action],
+        ...(checkInput.resource !== undefined ? { resource: checkInput.resource } : {}),
+        ...(checkInput.context !== undefined ? { context: checkInput.context } : {}),
+        ...(checkInput.clientTimestamp !== undefined
+          ? { clientTimestamp: checkInput.clientTimestamp }
+          : {}),
+        ...(checkInput.estimatedCostMicros !== undefined
+          ? { estimatedCostMicros: checkInput.estimatedCostMicros }
+          : {}),
+        ...(checkInput.idempotencyKey !== undefined
+          ? { idempotencyKey: checkInput.idempotencyKey }
+          : {}),
+        ...(agentToken !== null ? { agentToken } : {}),
+      });
+      const actionResult = result.results[action];
+      if (!actionResult) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "missing_result" }) }],
+          isError: true,
+        };
+      }
 
       if (actionResult.decision === "allow") {
         return originalHandler(req, extra);

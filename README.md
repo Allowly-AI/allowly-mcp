@@ -2,7 +2,7 @@
 
 Allowly guardrail middleware for MCP tool calls.
 
-Use this package when you already have an MCP server and want each tool call to pass through Allowly before the tool runs. The MCP tool name is sent to Allowly as the action name.
+Use this package when you already have an MCP server and want each tool call to pass through Allowly before the tool runs. The MCP tool name is the default action name. Use `checkInputFn` when your policy needs a different action, resource, or selected input fields.
 
 This is the TypeScript MCP middleware, separate from `@allowly/sdk` because npm has no extras. The Python equivalent ships inside the Python SDK as `allowly[fastmcp]`.
 
@@ -32,6 +32,13 @@ const allowly = new AllowlyMCPMiddleware({
   authorizationIdFn: async (userId) => {
     return getAuthorizationIdForUser(userId);
   },
+  agentTokenFn: ({ extra }) => getAuth0AgentToken(extra.authInfo),
+  checkInputFn: ({ arguments: args }) => ({
+    action: "email.send",
+    resource: `gmail:thread:${String(args.thread_id)}`,
+    context: { recipient_domain: String(args.recipient_domain) },
+    idempotencyKey: String(args.operation_id),
+  }),
 });
 
 allowly.attach(mcp.server);
@@ -52,9 +59,16 @@ The middleware calls:
 ```ts
 allowly.check({
   authorizationId,
-  actions: [toolName],
+  actions: [mappedAction],
+  resource: mappedResource,
+  context: selectedPolicyContext,
+  agentToken,
 });
 ```
+
+Tool arguments are not copied into policy context automatically. Select the exact fields your policy evaluates in `checkInputFn`. This keeps unrelated or sensitive arguments out of the receipt. `agentTokenFn` must read trusted server-side request state; a tool argument is not trusted identity.
+When `agentTokenFn` is configured, an error or an empty result denies the tool
+before `/check`; it never falls back to an API-key-only request.
 
 Authorization creation stays outside this package. Store the user's Allowly authorization ID in your app, then resolve it in `authorizationIdFn`.
 
