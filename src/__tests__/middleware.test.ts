@@ -83,7 +83,16 @@ describe("AllowlyMCPMiddleware against a real McpServer", () => {
     expect(result.result.isError).toBeFalsy();
     expect(result.userIdFnReceivedExtra).toBe(true);
     expect(result.originalHandlerReceivedExtra).toBe(true);
-    expect(result.check).toHaveBeenCalledWith({ authorizationId: "auth_1", actions: ["send_email"] });
+    expect(result.check).toHaveBeenCalledWith({
+      authorizationId: "auth_1",
+      actions: ["send_email"],
+      resource: undefined,
+      context: undefined,
+      clientTimestamp: undefined,
+      estimatedCostMicros: undefined,
+      idempotencyKey: undefined,
+      agentToken: undefined,
+    });
   });
 
   it("maps exact action inputs and trusted identity without copying arbitrary arguments", async () => {
@@ -103,6 +112,7 @@ describe("AllowlyMCPMiddleware against a real McpServer", () => {
         resource: `gmail:thread:${String(args.thread_id)}`,
         context: { recipient_domain: String(args.recipient_domain) },
         clientTimestamp: "2026-09-24T20:01:02.123Z",
+        estimatedCostMicros: 0,
         idempotencyKey: "send-123",
       }),
     });
@@ -131,6 +141,7 @@ describe("AllowlyMCPMiddleware against a real McpServer", () => {
         resource: "gmail:thread:abc",
         context: { recipient_domain: "example.com" },
         clientTimestamp: "2026-09-24T20:01:02.123Z",
+        estimatedCostMicros: 0,
         idempotencyKey: "send-123",
         agentToken: "trusted-jwt",
       });

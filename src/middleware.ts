@@ -171,18 +171,12 @@ export class AllowlyMCPMiddleware {
       const result = await this.client.check({
         authorizationId,
         actions: [action],
-        ...(checkInput.resource !== undefined ? { resource: checkInput.resource } : {}),
-        ...(checkInput.context !== undefined ? { context: checkInput.context } : {}),
-        ...(checkInput.clientTimestamp !== undefined
-          ? { clientTimestamp: checkInput.clientTimestamp }
-          : {}),
-        ...(checkInput.estimatedCostMicros !== undefined
-          ? { estimatedCostMicros: checkInput.estimatedCostMicros }
-          : {}),
-        ...(checkInput.idempotencyKey !== undefined
-          ? { idempotencyKey: checkInput.idempotencyKey }
-          : {}),
-        ...(agentToken !== null ? { agentToken } : {}),
+        resource: checkInput.resource,
+        context: checkInput.context,
+        clientTimestamp: checkInput.clientTimestamp,
+        estimatedCostMicros: checkInput.estimatedCostMicros,
+        idempotencyKey: checkInput.idempotencyKey,
+        agentToken: agentToken ?? undefined,
       });
       const actionResult = result.results[action];
       if (!actionResult) {
