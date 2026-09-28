@@ -3,4 +3,5 @@ export type {
   AllowlyMCPMiddlewareOptions,
   MCPAuthorizationContext,
   MCPCheckInput,
+  MCPLocalExecuteTool,
 } from "./middleware.js";

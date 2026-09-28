@@ -19,8 +19,15 @@
  *   allowly.attach(server);
  */
 import { Allowly } from "@allowly/sdk";
-import type { ActionCheckResultConfirm, ActionCheckResultEscalate } from "@allowly/sdk";
+import type {
+  ActionCheckResultConfirm,
+  ActionCheckResultEscalate,
+  CustomerHttpOptions,
+  CustomerPolicyInput,
+} from "@allowly/sdk";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import {
   CallToolRequestSchema,
@@ -57,6 +64,31 @@ type CheckInputFn = (
   context: MCPAuthorizationContext,
 ) => MCPCheckInput | Promise<MCPCheckInput>;
 
+/** Trusted, server-side configuration for one local Execute tool. */
+export interface MCPLocalExecuteTool {
+  /** MCP validates these business inputs before Execute is invoked. */
+  inputSchema: ZodRawShapeCompat;
+  description?: string;
+  /** Fixed provider URL; never take it from MCP tool arguments. */
+  url: string | URL;
+  enabledExecutableId: string;
+  catalogOperationId: string;
+  action: string;
+  method?: CustomerHttpOptions["method"];
+  journalDirectory: string;
+  evidenceMode?: CustomerHttpOptions["evidenceMode"];
+  /** Provide a fresh evidence directory for each witnessed operation. */
+  witnessFn?: (args: Record<string, unknown>, operationId: string) => CustomerHttpOptions["witness"] | Promise<CustomerHttpOptions["witness"]>;
+  /** Stable ID for this logical provider call, including retries. */
+  operationIdFn: (args: Record<string, unknown>, extra: HandlerExtra) => string | Promise<string>;
+  /** Reads credentials only from trusted server request state or a local secret store. */
+  providerHeadersFn?: (extra: HandlerExtra) => Record<string, string> | Promise<Record<string, string>>;
+  /** Selects bounded business arguments for the provider body. */
+  bodyFn?: (args: Record<string, unknown>) => string | Promise<string>;
+  /** Selects only fields that policy should receive. */
+  policyInputFn?: (args: Record<string, unknown>, extra: HandlerExtra) => CustomerPolicyInput | Promise<CustomerPolicyInput>;
+}
+
 export interface AllowlyMCPMiddlewareOptions {
   apiKey: string;
   authorizationIdFn: AuthorizationIdFn;
@@ -74,6 +106,7 @@ export class AllowlyMCPMiddleware {
   private readonly userIdFn?: UserIdFn;
   private readonly agentTokenFn?: AgentTokenFn;
   private readonly checkInputFn?: CheckInputFn;
+  private readonly localExecuteServers = new WeakMap<Server, Set<string>>();
 
   constructor(opts: AllowlyMCPMiddlewareOptions) {
     this.client = new Allowly({
@@ -99,11 +132,74 @@ export class AllowlyMCPMiddleware {
     return null;
   }
 
+  /** Register a schema-validated MCP tool backed by SDK customer-runtime Execute. */
+  registerLocalExecuteTool(
+    mcp: McpServer,
+    name: string,
+    tool: MCPLocalExecuteTool,
+  ): void {
+    const names = this.localExecuteServers.get(mcp.server) ?? new Set<string>();
+    if (names.has(name)) throw new Error(`Local Execute tool already registered: ${name}`);
+    mcp.registerTool(name, {
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    }, async (args, extra) => {
+      const context: MCPAuthorizationContext = {
+        toolName: name,
+        arguments: args as Record<string, unknown>,
+        request: { method: "tools/call", params: { name, arguments: args } } as CallToolRequest,
+        extra,
+      };
+      const denied = (reason: string) => ({
+        content: [{ type: "text" as const, text: JSON.stringify({ decision: "deny", reason }) }],
+        isError: true,
+      });
+      try {
+        const authorizationId = await this.resolveAuthorizationId(context);
+        if (!authorizationId) return denied("authorization_not_found");
+        let agentToken: string | undefined;
+        if (this.agentTokenFn) {
+          agentToken = (await this.agentTokenFn(context)) ?? undefined;
+          if (typeof agentToken !== "string" || !agentToken.trim()) {
+            return denied("agent_token_not_found");
+          }
+        }
+        const operationId = await tool.operationIdFn(args, extra);
+        if (typeof operationId !== "string" || !operationId.trim()) {
+          return denied("operation_id_not_found");
+        }
+        const result = await this.client.executeHttp(tool.url, {
+          operationId,
+          authorizationId,
+          enabledExecutableId: tool.enabledExecutableId,
+          catalogOperationId: tool.catalogOperationId,
+          action: tool.action,
+          method: tool.method,
+          headers: await tool.providerHeadersFn?.(extra),
+          body: await tool.bodyFn?.(args),
+          policyInput: await tool.policyInputFn?.(args, extra),
+          evidenceMode: tool.evidenceMode,
+          witness: await tool.witnessFn?.(args, operationId),
+          journalDirectory: tool.journalDirectory,
+          agentToken,
+        });
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
+          isError: result.state !== "response_observed" || result.response.status !== "succeeded",
+        };
+      } catch {
+        return denied("local_execute_failed");
+      }
+    });
+    names.add(name);
+    this.localExecuteServers.set(mcp.server, names);
+  }
+
   /**
    * Attach to a low-level MCP `Server` instance.
    *
-   * Wraps the existing `CallToolRequestSchema` handler so every tool call is
-   * gated on an Allowly check before the original handler runs.
+   * Checks ordinary tools before their handler runs. Registered local Execute
+   * tools use the SDK's integrated decision and execution path instead.
    */
   attach(server: Pick<Server, "setRequestHandler">): void {
     const originalHandlers: Map<string, (req: CallToolRequest, extra: HandlerExtra) => Promise<any>> =
@@ -118,6 +214,10 @@ export class AllowlyMCPMiddleware {
     server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       const args = req.params.arguments ?? {};
       const context = { toolName: req.params.name, arguments: args, request: req, extra };
+
+      if (this.localExecuteServers.get(server as Server)?.has(req.params.name)) {
+        return originalHandler(req, extra);
+      }
 
       const authorizationId = await this.resolveAuthorizationId(context);
       if (authorizationId === null) {
