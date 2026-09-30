@@ -77,13 +77,17 @@ async function gated(
 }
 
 describe("AllowlyMCPMiddleware against a real McpServer", () => {
-  it("runs a configured Execute tool through the local SDK with local provider headers", async () => {
+  it.each([undefined, "receipt", "witnessed"] as const)("runs an Execute tool in %s mode with local provider headers", async (evidenceMode) => {
     const mcp = new McpServer({ name: "test-server", version: "1.0.0" });
     const middleware = new AllowlyMCPMiddleware({
       apiKey: "allowly-test-key",
       userIdFn: () => "u1",
       authorizationIdFn: () => "auth_1",
     });
+    const witness = evidenceMode === "witnessed"
+      ? { evidenceDirectory: "/tmp/allowly-mcp-test/evidence/order-123" }
+      : undefined;
+    const witnessFn = vi.fn(async () => witness);
     middleware.registerLocalExecuteTool(mcp, "submit_order", {
       inputSchema: { order_id: z.string() },
       url: "https://provider.example/v1/orders",
@@ -92,6 +96,8 @@ describe("AllowlyMCPMiddleware against a real McpServer", () => {
       catalogOperationId: "provider.orders.submit",
       action: "order.submit",
       journalDirectory: "/tmp/allowly-mcp-test",
+      evidenceMode,
+      ...(witness ? { witnessFn } : {}),
       operationIdFn: (args) => `order:${String(args.order_id)}`,
       providerHeadersFn: () => ({ authorization: "Bearer provider-secret", "content-type": "application/json" }),
       bodyFn: (args) => JSON.stringify({ order_id: args.order_id }),
@@ -125,12 +131,17 @@ describe("AllowlyMCPMiddleware against a real McpServer", () => {
         headers: { authorization: "Bearer provider-secret", "content-type": "application/json" },
         body: '{"order_id":"123"}',
         policyInput: { resource: "order:123" },
-        evidenceMode: undefined,
-        witness: undefined,
+        evidenceMode,
+        witness,
         journalDirectory: "/tmp/allowly-mcp-test",
         agentToken: undefined,
       });
       expect(JSON.stringify(result)).not.toContain("provider-secret");
+      if (witness) {
+        expect(witnessFn).toHaveBeenCalledExactlyOnceWith({ order_id: "123" }, "order:123");
+      } else {
+        expect(witnessFn).not.toHaveBeenCalled();
+      }
       const invalid = await client.callTool({ name: "submit_order", arguments: { order_id: 123 } });
       expect(invalid.isError).toBe(true);
       expect(executeHttp).toHaveBeenCalledTimes(1);

@@ -1,10 +1,17 @@
 # @allowly/mcp
 
-Allowly guardrail middleware for MCP tool calls.
+One Allowly MCP package for checked tools and customer-side Execute.
 
 Use this package when you already have an MCP server and want each tool call to pass through Allowly before the tool runs. The MCP tool name is the default action name. Use `checkInputFn` when your policy needs a different action, resource, or selected input fields.
 
-This is the TypeScript MCP middleware, separate from `@allowly/sdk` because npm has no extras. The Python equivalent ships inside the Python SDK as `allowly[fastmcp]`.
+This is the TypeScript MCP integration, separate from `@allowly/sdk` because npm has no extras. The Python check-only equivalent ships inside the Python SDK as `allowly[fastmcp]`. There is no separate TLSNotary MCP package.
+
+Local Execute tools support two evidence modes:
+
+- `receipt`: an Allowly decision before the call and a signed customer-reported outcome after it.
+- `witnessed`: the same before/after flow, plus a live TLS witness during the provider exchange.
+
+Ordinary tools wrapped with `attach()` still use the before-only `/check` flow.
 
 ## Install
 
@@ -13,6 +20,10 @@ npm install @allowly/mcp @allowly/sdk @modelcontextprotocol/sdk zod
 ```
 
 `@allowly/mcp` is ESM-only and requires Node.js 20 or newer.
+
+Receipt mode needs no native executable. Witnessed mode also needs the optional
+Rust helper installed on the MCP host through `allowly setup witness`; it is not
+another MCP package. See [Witness setup](#witness-setup) below.
 
 ## Usage
 
@@ -141,6 +152,73 @@ under a new ID. For witnessed mode, set `evidenceMode: "witnessed"` and provide
 fails closed if the policy requires a witness and none is configured. Receipt
 mode signs the customer runtime's reported HTTP outcome; it has no independent
 witness of the provider response.
+
+For the same registered tool, replace the receipt setting with:
+
+```ts
+evidenceMode: "witnessed",
+witnessFn: (_args, operationId) => ({
+  evidenceDirectory: `/var/lib/my-mcp/allowly-evidence/${operationId}`,
+}),
+```
+
+Use a safe server-derived operation ID and a new evidence directory for each
+logical operation. Keep the full witness evidence private: it can include
+provider credentials and response data. Neither mode proves business completion
+or that the customer has closed every alternative route to the provider.
+
+## Witness setup
+
+After installing `@allowly-ai/cli` and running `allowly login` for this workspace,
+choose one install path on the trusted MCP host:
+
+```bash
+# Download the checksum-verified helper; no Rust toolchain needed.
+allowly setup witness
+
+# Download reviewed adapter source, fetch pinned official TLSNotary, and build locally.
+allowly setup witness --build-from-source
+```
+
+The source path needs Rust 1.95.0, Cargo, Git, Bash, and a native C build toolchain.
+The helper is Allowly's Rust adapter around unchanged TLSNotary libraries, pinned
+to `v0.1.0-alpha.15` / `47aee45b53e06648c1b2ad3689b367b8c923fdec`.
+It is not an upstream TLSNotary executable renamed by Allowly.
+
+Both paths use assets from the `witness-v0.1.0` release in
+`Allowly-AI/allowly-mcp`. The CLI verifies a pinned `SHA256SUMS` digest, then
+checks the selected archive before running or building it. Automatic installs
+remain blocked until reviewed release assets are published and that manifest
+digest is pinned in the CLI. They do not fall back to an unverified download.
+Until then, use a reviewed offline archive or helper:
+
+```bash
+allowly setup witness --archive /path/to/allowly-witness-poc-0.1.0-<target>.tar.gz --sha256 <archive-sha256>
+allowly setup witness --helper /absolute/path/to/allowly-witness-poc
+```
+
+Supported hosts are macOS and glibc Linux, on arm64 or x64. Setup opens the
+authenticated workspace key page. Compare the complete public-key fingerprint
+and confirm it in the terminal. The CLI saves only the helper path, public key,
+workspace ID, and confirmed fingerprint. It downloads no private witness key.
+The SDK reads that workspace setup when `witnessFn` provides the evidence path.
+For a development witness with a private CA, also use
+`--witness-ca-cert /absolute/path/to/ca.pem`; this trust applies only to the
+witness socket, not provider HTTPS.
+
+## Native helper and Witness Bridge source
+
+This repo owns both implementations under [`witness/`](witness/). They share
+the pinned TLSNotary dependency and Allowly execution protocol:
+
+- [`witness/EXECUTE.md`](witness/EXECUTE.md): customer helper and native profile limits.
+- [`witness/EXECUTE_SERVICE.md`](witness/EXECUTE_SERVICE.md): Allowly-hosted Witness Bridge, the live witnessing socket/service.
+- [`witness/DISTRIBUTION.md`](witness/DISTRIBUTION.md): binary/source release packaging and checksum checks.
+
+Customer setup installs only the helper. The bridge remains separate Allowly
+infrastructure with its own TLS route and witness-only signing identity; it is
+not started by `npm install` or `allowly setup witness`. Keeping its source in
+this repo does not combine customer and server credentials or deployment roles.
 
 ## SEAL evidence is explicit
 

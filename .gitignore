@@ -1,3 +1,13 @@
 node_modules/
 dist/
 .DS_Store
+witness/.toolchain/
+witness/.venv/
+witness/vendor/
+witness/target/
+witness/artifacts/
+witness/dist/
+witness/*.log
+witness/**/__pycache__/
+witness/**/*.pyc
+witness/.env
