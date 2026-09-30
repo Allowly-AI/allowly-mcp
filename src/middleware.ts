@@ -100,6 +100,11 @@ export interface AllowlyMCPMiddlewareOptions {
   baseUrl?: string;
 }
 
+const denied = (reason: string) => ({
+  content: [{ type: "text" as const, text: JSON.stringify({ decision: "deny", reason }) }],
+  isError: true,
+});
+
 export class AllowlyMCPMiddleware {
   readonly client: Allowly;
   private readonly authorizationIdFn: AuthorizationIdFn;
@@ -150,10 +155,6 @@ export class AllowlyMCPMiddleware {
         request: { method: "tools/call", params: { name, arguments: args } } as CallToolRequest,
         extra,
       };
-      const denied = (reason: string) => ({
-        content: [{ type: "text" as const, text: JSON.stringify({ decision: "deny", reason }) }],
-        isError: true,
-      });
       try {
         const authorizationId = await this.resolveAuthorizationId(context);
         if (!authorizationId) return denied("authorization_not_found");
@@ -221,10 +222,7 @@ export class AllowlyMCPMiddleware {
 
       const authorizationId = await this.resolveAuthorizationId(context);
       if (authorizationId === null) {
-        return {
-          content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "authorization_not_found" }) }],
-          isError: true,
-        };
+        return denied("authorization_not_found");
       }
 
       let checkInput: MCPCheckInput;
@@ -233,39 +231,24 @@ export class AllowlyMCPMiddleware {
           ? await this.checkInputFn(context)
           : {};
       } catch {
-        return {
-          content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "check_input_unavailable" }) }],
-          isError: true,
-        };
+        return denied("check_input_unavailable");
       }
       if (!checkInput || typeof checkInput !== "object") {
-        return {
-          content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "check_input_invalid" }) }],
-          isError: true,
-        };
+        return denied("check_input_invalid");
       }
       const action = checkInput.action ?? req.params.name;
       if (typeof action !== "string" || !action.trim()) {
-        return {
-          content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "check_action_invalid" }) }],
-          isError: true,
-        };
+        return denied("check_action_invalid");
       }
       let agentToken: string | null = null;
       if (this.agentTokenFn) {
         try {
           agentToken = await this.agentTokenFn(context);
         } catch {
-          return {
-            content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "agent_token_unavailable" }) }],
-            isError: true,
-          };
+          return denied("agent_token_unavailable");
         }
         if (typeof agentToken !== "string" || !agentToken.trim()) {
-          return {
-            content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "agent_token_not_found" }) }],
-            isError: true,
-          };
+          return denied("agent_token_not_found");
         }
       }
       const result = await this.client.check({
@@ -280,10 +263,7 @@ export class AllowlyMCPMiddleware {
       });
       const actionResult = result.results[action];
       if (!actionResult) {
-        return {
-          content: [{ type: "text", text: JSON.stringify({ decision: "deny", reason: "missing_result" }) }],
-          isError: true,
-        };
+        return denied("missing_result");
       }
 
       if (actionResult.decision === "allow") {
