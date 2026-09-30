@@ -151,6 +151,57 @@ describe("AllowlyMCPMiddleware against a real McpServer", () => {
     }
   });
 
+  it.each([
+    ["response_observed", 200, false],
+    ["response_observed", 299, false],
+    ["response_observed", 199, true],
+    ["response_observed", 300, true],
+    ["response_observed", 400, true],
+    ["response_observed", null, true],
+    ["unknown", null, true],
+    ["not_allowed", null, true],
+  ] as const)("classifies a %s Execute result with provider status %s", async (state, status, isError) => {
+    const mcp = new McpServer({ name: "test-server", version: "1.0.0" });
+    const middleware = new AllowlyMCPMiddleware({
+      apiKey: "allowly-test-key",
+      userIdFn: () => "u1",
+      authorizationIdFn: () => "auth_1",
+    });
+    middleware.registerLocalExecuteTool(mcp, "submit_order", {
+      inputSchema: {},
+      url: "https://provider.example/v1/orders",
+      enabledExecutableId: "exe_1",
+      catalogOperationId: "provider.orders.submit",
+      action: "order.submit",
+      journalDirectory: "/tmp/allowly-mcp-test",
+      operationIdFn: () => "order-123",
+    });
+    const executionResult = state === "not_allowed" ? {
+      state,
+      authorization: { status: "denied" },
+    } : {
+      state,
+      response: null,
+      outcomePending: true,
+      providerResponse: status === null ? null : { status, body: new Uint8Array([79, 75]) },
+    };
+    vi.spyOn(middleware.client, "executeHttp").mockResolvedValue(executionResult as any);
+    middleware.attach(mcp.server);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverTransport);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await client.connect(clientTransport);
+    try {
+      const result = await client.callTool({ name: "submit_order", arguments: {} });
+      expect(result.isError).toBe(isError);
+      expect(result.content).toEqual([{ type: "text", text: JSON.stringify(executionResult) }]);
+    } finally {
+      await client.close();
+      await mcp.close();
+    }
+  });
+
   it("fails closed without exposing local provider secret errors", async () => {
     const mcp = new McpServer({ name: "test-server", version: "1.0.0" });
     const middleware = new AllowlyMCPMiddleware({

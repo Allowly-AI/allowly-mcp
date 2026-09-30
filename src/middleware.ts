@@ -186,7 +186,12 @@ export class AllowlyMCPMiddleware {
         });
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result) }],
-          isError: result.state !== "response_observed" || result.response.status !== "succeeded",
+          isError: result.state !== "response_observed" || (
+            result.response
+              ? result.response.status !== "succeeded"
+              : !result.outcomePending || !result.providerResponse ||
+                result.providerResponse.status < 200 || result.providerResponse.status >= 300
+          ),
         };
       } catch {
         return denied("local_execute_failed");

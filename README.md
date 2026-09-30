@@ -96,8 +96,9 @@ inputs, then the middleware calls `@allowly/sdk`'s `executeHttp`. The SDK
 requests Allowly's decision and sends the approved provider request from your
 MCP server host. Allowly receives the provider URL origin, path, query,
 selected policy input, header names and hashes, body hash and byte count, and
-the reported outcome. Provider header values and body bytes stay local. Keep
-secrets out of the URL, query, and policy input.
+the reported outcome. Provider header values and request body bytes are not
+uploaded to Allowly. The MCP tool result includes the observed provider response
+bytes. Keep secrets out of the URL, query, and policy input.
 
 ```ts
 import { z } from "zod";
@@ -152,6 +153,13 @@ under a new ID. For witnessed mode, set `evidenceMode: "witnessed"` and provide
 fails closed if the policy requires a witness and none is configured. Receipt
 mode signs the customer runtime's reported HTTP outcome; it has no independent
 witness of the provider response.
+
+An observed 2xx provider response remains a successful MCP result when its
+outcome upload is pending. That result has `outcomePending: true` and
+`response: null`; Allowly has not confirmed the report. Reuse the same operation
+ID to retry the saved report without sending another provider request. Provider
+response bytes are available only on the call that observed them, not a journal
+retry.
 
 For the same registered tool, replace the receipt setting with:
 
