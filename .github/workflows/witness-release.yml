@@ -58,6 +58,8 @@ jobs:
       - name: Native Rust and local TLS/MPC checks
         working-directory: witness
         run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r kms/requirements.lock
           bash scripts/cargo.sh test --release --locked --bin allowly-witness-poc
           python3 scripts/execute_demo.py
       - name: Check extracted native executable

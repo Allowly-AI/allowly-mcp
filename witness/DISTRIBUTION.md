@@ -14,14 +14,14 @@ trust configuration. No Rust toolchain is needed for a precompiled archive.
 
 ## Artifact contract
 
-For Cargo version `0.1.0`, each release asset is named
-`allowly-witness-poc-0.1.0-<target>.tar.gz`. A tarball contains exactly one
+For Cargo version `0.1.1`, each release asset is named
+`allowly-witness-poc-0.1.1-<target>.tar.gz`. A tarball contains exactly one
 root-level regular file, `allowly-witness-poc`, with executable mode `0755`.
 There are no symlinks or path components to interpret. The release also has
 `SHA256SUMS`, sorted by archive filename, with standard lines of the form
 `<64 lowercase SHA-256 hex>  <archive filename>`.
 
-The optional source asset is `allowly-witness-poc-0.1.0-source.tar.gz`. It uses
+The optional source asset is `allowly-witness-poc-0.1.1-source.tar.gz`. It uses
 the same deterministic USTAR/gzip format, with regular files only and no
 directory, link, PAX, or GNU metadata entries. Its root contains `Cargo.toml`,
 `Cargo.lock`, `rust-toolchain.toml`, `src/*.rs`, `scripts/prepare_tlsn.sh`, and
@@ -45,9 +45,9 @@ checksum file. Windows and musl targets are not packaged here.
 Build Linux assets on the oldest glibc version you intend to support, and test
 the extracted binary on that baseline before adding its checksum to a release.
 
-For a published `witness-v0.1.0` release of the consolidated MCP repository,
+For a published `witness-v0.1.1` release of the consolidated MCP repository,
 the base URL is
-`https://github.com/Allowly-AI/allowly-mcp/releases/download/witness-v0.1.0/`.
+`https://github.com/Allowly-AI/allowly-mcp/releases/download/witness-v0.1.1/`.
 The CLI should pin both the helper version and SHA-256 digest of the complete
 `SHA256SUMS` file in its source. It must verify that digest before trusting any
 archive digest from the file, then verify the selected archive before extracting
@@ -63,6 +63,8 @@ crates. This is a native build on each target, with no cross compilation.
 
 ```bash
 cd allowly_mcp/witness
+python3 -m venv .venv
+.venv/bin/python -m pip install -r kms/requirements.lock
 python3 scripts/package_helper.py build --local --offline
 python3 scripts/package_helper.py source --local
 python3 scripts/package_helper.py manifest
@@ -74,7 +76,7 @@ bash scripts/cargo.sh test --release --locked --offline --bin allowly-witness-po
 `--local` permits an untagged or dirty development checkout, but its archive
 must not be published. Omit `--offline` when first obtaining locked crates.
 Without `--local`, the packager requires a clean checkout at a tag matching
-the Cargo version, such as `witness-v0.1.0`. Run the build and Rust test on each native
+the Cargo version, such as `witness-v0.1.1`. Run the build and Rust test on each native
 target. Build the source asset once from that same tagged checkout. Gather
 their tarballs in one directory, run `manifest --output DIR`,
 then run `verify --output DIR` and record the printed SHA-256 digest of
@@ -94,6 +96,9 @@ The workflow uses Rust 1.95.0 and the existing packager on four native runners:
 Ubuntu 22.04 x64/ARM64 (tested glibc floor 2.35) and macOS 15 Intel/Apple
 Silicon. Each runs the packager tests, native Rust tests, local synthetic
 TLS/MPC execution smoke, and command checks on the extracted executable.
+Version 0.1.1 adds the pinned fake-KMS Python test environment from
+`kms/requirements.lock`, which was missing in the first native release run.
+All checks on all four native hosts must pass before publication.
 It builds the source archive once, requires exactly those five archives,
 then generates and verifies `SHA256SUMS` with the existing packager. No
 compatibility below these tested OS baselines is claimed.

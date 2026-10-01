@@ -36,7 +36,7 @@ release checks, and offline testing before publication.
 ## Source and service ownership
 
 - `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `src/`: native helper and
-  verifier, still named `allowly-witness-poc` version `0.1.0`.
+  verifier, still named `allowly-witness-poc` version `0.1.1`.
 - `scripts/prepare_tlsn.sh`: fetches official TLSNotary alpha.15 and rejects
   any commit except `47aee45b53e06648c1b2ad3689b367b8c923fdec` or local changes.
 - [EXECUTE.md](EXECUTE.md): approved execution, dispatch gate, local proof,
