@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { AllowlyMCPMiddleware } from "../middleware.js";
 
 type Decision = "allow" | "deny" | "confirm" | "escalate";
@@ -76,6 +77,166 @@ async function gated(
 }
 
 describe("AllowlyMCPMiddleware against a real McpServer", () => {
+  it.each([undefined, "receipt", "witnessed"] as const)("runs an Execute tool in %s mode with local provider headers", async (evidenceMode) => {
+    const mcp = new McpServer({ name: "test-server", version: "1.0.0" });
+    const middleware = new AllowlyMCPMiddleware({
+      apiKey: "allowly-test-key",
+      userIdFn: () => "u1",
+      authorizationIdFn: () => "auth_1",
+    });
+    const witness = evidenceMode === "witnessed"
+      ? { evidenceDirectory: "/tmp/allowly-mcp-test/evidence/order-123" }
+      : undefined;
+    const witnessFn = vi.fn(async () => witness);
+    middleware.registerLocalExecuteTool(mcp, "submit_order", {
+      inputSchema: { order_id: z.string() },
+      url: "https://provider.example/v1/orders",
+      method: "POST",
+      enabledExecutableId: "exe_1",
+      catalogOperationId: "provider.orders.submit",
+      action: "order.submit",
+      journalDirectory: "/tmp/allowly-mcp-test",
+      evidenceMode,
+      ...(witness ? { witnessFn } : {}),
+      operationIdFn: (args) => `order:${String(args.order_id)}`,
+      providerHeadersFn: () => ({ authorization: "Bearer provider-secret", "content-type": "application/json" }),
+      bodyFn: (args) => JSON.stringify({ order_id: args.order_id }),
+      policyInputFn: (args) => ({ resource: `order:${String(args.order_id)}` }),
+    });
+    const check = vi.spyOn(middleware.client, "check");
+    const executeHttp = vi.spyOn(middleware.client, "executeHttp").mockResolvedValue({
+      state: "response_observed",
+      response: { status: "succeeded" },
+    } as any);
+    middleware.attach(mcp.server);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverTransport);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await client.connect(clientTransport);
+    try {
+      const result = await client.callTool({
+        name: "submit_order",
+        arguments: { order_id: "123", operation_id: "agent-chosen-id" },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(check).not.toHaveBeenCalled();
+      expect(executeHttp).toHaveBeenCalledExactlyOnceWith("https://provider.example/v1/orders", {
+        operationId: "order:123",
+        authorizationId: "auth_1",
+        enabledExecutableId: "exe_1",
+        catalogOperationId: "provider.orders.submit",
+        action: "order.submit",
+        method: "POST",
+        headers: { authorization: "Bearer provider-secret", "content-type": "application/json" },
+        body: '{"order_id":"123"}',
+        policyInput: { resource: "order:123" },
+        evidenceMode,
+        witness,
+        journalDirectory: "/tmp/allowly-mcp-test",
+        agentToken: undefined,
+      });
+      expect(JSON.stringify(result)).not.toContain("provider-secret");
+      if (witness) {
+        expect(witnessFn).toHaveBeenCalledExactlyOnceWith({ order_id: "123" }, "order:123");
+      } else {
+        expect(witnessFn).not.toHaveBeenCalled();
+      }
+      const invalid = await client.callTool({ name: "submit_order", arguments: { order_id: 123 } });
+      expect(invalid.isError).toBe(true);
+      expect(executeHttp).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await mcp.close();
+    }
+  });
+
+  it.each([
+    ["response_observed", 200, false],
+    ["response_observed", 299, false],
+    ["response_observed", 199, true],
+    ["response_observed", 300, true],
+    ["response_observed", 400, true],
+    ["response_observed", null, true],
+    ["unknown", null, true],
+    ["not_allowed", null, true],
+  ] as const)("classifies a %s Execute result with provider status %s", async (state, status, isError) => {
+    const mcp = new McpServer({ name: "test-server", version: "1.0.0" });
+    const middleware = new AllowlyMCPMiddleware({
+      apiKey: "allowly-test-key",
+      userIdFn: () => "u1",
+      authorizationIdFn: () => "auth_1",
+    });
+    middleware.registerLocalExecuteTool(mcp, "submit_order", {
+      inputSchema: {},
+      url: "https://provider.example/v1/orders",
+      enabledExecutableId: "exe_1",
+      catalogOperationId: "provider.orders.submit",
+      action: "order.submit",
+      journalDirectory: "/tmp/allowly-mcp-test",
+      operationIdFn: () => "order-123",
+    });
+    const executionResult = state === "not_allowed" ? {
+      state,
+      authorization: { status: "denied" },
+    } : {
+      state,
+      response: null,
+      outcomePending: true,
+      providerResponse: status === null ? null : { status, body: new Uint8Array([79, 75]) },
+    };
+    vi.spyOn(middleware.client, "executeHttp").mockResolvedValue(executionResult as any);
+    middleware.attach(mcp.server);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverTransport);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await client.connect(clientTransport);
+    try {
+      const result = await client.callTool({ name: "submit_order", arguments: {} });
+      expect(result.isError).toBe(isError);
+      expect(result.content).toEqual([{ type: "text", text: JSON.stringify(executionResult) }]);
+    } finally {
+      await client.close();
+      await mcp.close();
+    }
+  });
+
+  it("fails closed without exposing local provider secret errors", async () => {
+    const mcp = new McpServer({ name: "test-server", version: "1.0.0" });
+    const middleware = new AllowlyMCPMiddleware({
+      apiKey: "allowly-test-key",
+      userIdFn: () => "u1",
+      authorizationIdFn: () => "auth_1",
+    });
+    middleware.registerLocalExecuteTool(mcp, "submit_order", {
+      inputSchema: {},
+      url: "https://provider.example/v1/orders",
+      enabledExecutableId: "exe_1",
+      catalogOperationId: "provider.orders.submit",
+      action: "order.submit",
+      journalDirectory: "/tmp/allowly-mcp-test",
+      operationIdFn: () => "order-123",
+      providerHeadersFn: () => { throw new Error("provider-secret unavailable"); },
+    });
+    const executeHttp = vi.spyOn(middleware.client, "executeHttp");
+    middleware.attach(mcp.server);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverTransport);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await client.connect(clientTransport);
+    try {
+      const result = await client.callTool({ name: "submit_order", arguments: {} });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).toContain("local_execute_failed");
+      expect(JSON.stringify(result)).not.toContain("provider-secret");
+      expect(executeHttp).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await mcp.close();
+    }
+  });
+
   it("runs an allowed tool and preserves handler context", async () => {
     const result = await gated("allow");
 
@@ -83,7 +244,73 @@ describe("AllowlyMCPMiddleware against a real McpServer", () => {
     expect(result.result.isError).toBeFalsy();
     expect(result.userIdFnReceivedExtra).toBe(true);
     expect(result.originalHandlerReceivedExtra).toBe(true);
-    expect(result.check).toHaveBeenCalledWith({ authorizationId: "auth_1", actions: ["send_email"] });
+    expect(result.check).toHaveBeenCalledWith({
+      authorizationId: "auth_1",
+      actions: ["send_email"],
+      resource: undefined,
+      context: undefined,
+      clientTimestamp: undefined,
+      estimatedCostMicros: undefined,
+      idempotencyKey: undefined,
+      agentToken: undefined,
+    });
+  });
+
+  it("maps exact action inputs and trusted identity without copying arbitrary arguments", async () => {
+    const mcp = new McpServer({ name: "test-server", version: "1.0.0" });
+    let toolRan = 0;
+    mcp.registerTool("send_email", {}, async () => {
+      toolRan++;
+      return { content: [{ type: "text", text: "sent" }] };
+    });
+    const middleware = new AllowlyMCPMiddleware({
+      apiKey: "test-key",
+      userIdFn: () => "u1",
+      authorizationIdFn: () => "auth_1",
+      agentTokenFn: () => "trusted-jwt",
+      checkInputFn: ({ arguments: args }) => ({
+        action: "email.send",
+        resource: `gmail:thread:${String(args.thread_id)}`,
+        context: { recipient_domain: String(args.recipient_domain) },
+        clientTimestamp: "2026-09-24T20:01:02.123Z",
+        estimatedCostMicros: 0,
+        idempotencyKey: "send-123",
+      }),
+    });
+    const check = vi.spyOn(middleware.client, "check").mockResolvedValue({
+      results: { "email.send": actionResult("allow") },
+    } as any);
+    middleware.attach(mcp.server);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverTransport);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await client.connect(clientTransport);
+    try {
+      await client.callTool({
+        name: "send_email",
+        arguments: {
+          thread_id: "abc",
+          recipient_domain: "example.com",
+          secret_body: "not policy context",
+        },
+      });
+      expect(toolRan).toBe(1);
+      expect(check).toHaveBeenCalledWith({
+        authorizationId: "auth_1",
+        actions: ["email.send"],
+        resource: "gmail:thread:abc",
+        context: { recipient_domain: "example.com" },
+        clientTimestamp: "2026-09-24T20:01:02.123Z",
+        estimatedCostMicros: 0,
+        idempotencyKey: "send-123",
+        agentToken: "trusted-jwt",
+      });
+      expect(JSON.stringify(check.mock.calls[0][0])).not.toContain("secret_body");
+    } finally {
+      await client.close();
+      await mcp.close();
+    }
   });
 
   it.each([
@@ -105,6 +332,44 @@ describe("AllowlyMCPMiddleware against a real McpServer", () => {
       expect(toolRan).toBe(0);
       expect(check).not.toHaveBeenCalled();
       expect(JSON.parse(((result as any).content[0] as { text: string }).text).decision).toBe("deny");
+    }
+  });
+
+  it.each([
+    ["agent_token_not_found", () => null],
+    ["agent_token_not_found", () => ""],
+    ["agent_token_unavailable", () => Promise.reject(new Error("secret provider detail"))],
+  ] as const)("fails closed for an invalid configured token provider: %s", async (reason, provider) => {
+    const mcp = new McpServer({ name: "test-server", version: "1.0.0" });
+    let toolRan = 0;
+    mcp.registerTool("send_email", {}, async () => {
+      toolRan++;
+      return { content: [{ type: "text", text: "sent" }] };
+    });
+    const middleware = new AllowlyMCPMiddleware({
+      apiKey: "test-key",
+      userIdFn: () => "u1",
+      authorizationIdFn: () => "auth_1",
+      agentTokenFn: provider,
+    });
+    const check = vi.spyOn(middleware.client, "check");
+    middleware.attach(mcp.server);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcp.connect(serverTransport);
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await client.connect(clientTransport);
+    try {
+      const result = await client.callTool({ name: "send_email", arguments: {} });
+      const body = JSON.parse(((result as any).content[0] as { text: string }).text);
+      expect(result.isError).toBe(true);
+      expect(body).toEqual({ decision: "deny", reason });
+      expect(JSON.stringify(result)).not.toContain("secret provider detail");
+      expect(toolRan).toBe(0);
+      expect(check).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await mcp.close();
     }
   });
 

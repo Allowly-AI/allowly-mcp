@@ -1,6 +1,6 @@
 {
   "name": "@allowly/mcp",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Allowly guardrail middleware for MCP tool calls",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,7 +14,26 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "witness/*.md",
+    "witness/.dockerignore",
+    "witness/Cargo.toml",
+    "witness/Cargo.lock",
+    "witness/rust-toolchain.toml",
+    "witness/src",
+    "witness/Dockerfile.bridge",
+    "witness/execute_service.py",
+    "witness/execute_service_requirements.txt",
+    "witness/kms/*.py",
+    "witness/kms/adapter_test_vector.json",
+    "witness/kms/requirements.txt",
+    "witness/kms/requirements.lock",
+    "witness/kms/README.md",
+    "witness/scripts/bootstrap.sh",
+    "witness/scripts/cargo.sh",
+    "witness/scripts/prepare_tlsn.sh",
+    "witness/scripts/package_helper.py",
+    "witness/scripts/test_package_helper.py"
   ],
   "publishConfig": {
     "access": "public"
@@ -23,14 +42,16 @@
     "build": "tsup src/index.ts --format esm --clean --external @allowly/sdk --external @modelcontextprotocol/sdk && tsc --emitDeclarationOnly",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "witness:build": "cd witness && bash scripts/bootstrap.sh",
+    "witness:test": "cd witness && bash scripts/cargo.sh test --release --locked --bin allowly-witness-poc && python3 -m unittest scripts/test_package_helper.py",
     "prepack": "npm run build && node --input-type=module -e \"const pkg = await import('@allowly/mcp'); if (typeof pkg.AllowlyMCPMiddleware !== 'function') process.exit(1)\""
   },
   "peerDependencies": {
-    "@allowly/sdk": "^0.3.1 || ^0.4.0 || ^0.5.0",
+    "@allowly/sdk": "^0.6.0",
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
-    "@allowly/sdk": "^0.5.0",
+    "@allowly/sdk": "^0.6.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^20.19.40",
     "tsup": "^8.5.1",

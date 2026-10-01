@@ -1,0 +1,30 @@
+FROM rust:1.95.0-bookworm AS native
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY scripts/prepare_tlsn.sh scripts/prepare_tlsn.sh
+COPY src/ src/
+RUN bash scripts/prepare_tlsn.sh && cargo build --release --locked --bin allowly-witness-poc
+
+FROM python:3.12.10-slim-bookworm
+
+WORKDIR /app
+COPY execute_service_requirements.txt /app/
+COPY kms/requirements.lock /app/kms/
+RUN pip install --no-cache-dir -r execute_service_requirements.txt -r kms/requirements.lock
+COPY execute_service.py /app/
+COPY kms/gcp_signer.py /app/kms/
+COPY --from=native /build/target/release/allowly-witness-poc /usr/local/bin/allowly-witness-poc
+
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision=$GIT_SHA \
+      allowly.witness_claim_protocol=workspace-kms-v1
+
+HEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=3 \
+  CMD python -c 'import urllib.request; r = urllib.request.urlopen("http://127.0.0.1:8765/healthz", timeout=2); assert r.status == 200 and r.read(16) == b"ok\n"' || exit 1
+
+ENV ALLOWLY_WITNESS_NATIVE_BIN=/usr/local/bin/allowly-witness-poc \
+    ALLOWLY_WITNESS_KMS_PYTHON=/usr/local/bin/python \
+    ALLOWLY_WITNESS_KMS_HELPER=/app/kms/gcp_signer.py
+
+CMD ["python", "/app/execute_service.py"]

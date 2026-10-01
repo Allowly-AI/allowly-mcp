@@ -1,0 +1,14 @@
+*
+!Dockerfile.bridge
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!src/
+!src/**
+!scripts/
+!scripts/prepare_tlsn.sh
+!execute_service.py
+!execute_service_requirements.txt
+!kms/
+!kms/gcp_signer.py
+!kms/requirements.lock
