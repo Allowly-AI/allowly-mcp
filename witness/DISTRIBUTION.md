@@ -3,8 +3,7 @@
 The Allowly CLI installs the native customer helper owned by `@allowly/mcp`
 and used by the Python and TypeScript SDKs. Both SDKs run the same `allowly-witness-poc` executable for
 `prove-execute`; they do not download a helper during `pip` or `npm` install.
-This is an experimental binary. No helper release has been published by these
-scripts.
+This is an experimental binary. Local packaging does not publish a release.
 
 `allowly setup witness` downloads a precompiled helper. Add
 `--build-from-source` to download the pinned adapter source and build it with
@@ -82,6 +81,36 @@ then run `verify --output DIR` and record the printed SHA-256 digest of
 `SHA256SUMS` for the CLI pin. Publish the exact checked tarballs and checksum
 file together only through the normal release process. No command here uploads
 or publishes anything.
+
+## GitHub release workflow
+
+After review and merge to `main`, an approved operator pushes the helper's
+matching `witness-vVERSION` tag. `.github/workflows/witness-release.yml` runs
+only for those tags; it does not publish npm or deploy the Witness Bridge.
+Every job requires a clean tagged checkout matching Cargo and an ancestor of
+`origin/main`.
+
+The workflow uses Rust 1.95.0 and the existing packager on four native runners:
+Ubuntu 22.04 x64/ARM64 (tested glibc floor 2.35) and macOS 15 Intel/Apple
+Silicon. Each runs the packager tests, native Rust tests, local synthetic
+TLS/MPC execution smoke, and command checks on the extracted executable.
+It builds the source archive once, requires exactly those five archives,
+then generates and verifies `SHA256SUMS` with the existing packager. No
+compatibility below these tested OS baselines is claimed.
+
+Only the release job has `contents: write`. Its standard GitHub token creates
+an experimental prerelease with `--latest=false`: the five checked archives,
+`SHA256SUMS`, and the root `LICENSE` as a separate asset. Archive contents stay
+unchanged; `LICENSE` is not included in the five-archive checksum manifest.
+No provider credentials, local fixture artifacts, bridge service, or keys are
+uploaded. An existing release is never overwritten. A failed tag workflow can
+be rerun from Actions only while that release does not already exist.
+
+The release job prints the complete manifest's SHA-256 in its run summary
+and includes it in the release notes. Review the published assets and
+independently pin that exact digest in the CLI before enabling its download
+paths. Publishing the helper does not update the CLI pin or move the MCP npm
+version.
 
 The tar/gzip wrapper is repeatable for the same binary. Separate macOS Rust
 builds can differ in linker UUID and signature bytes even with the same pinned
