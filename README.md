@@ -240,3 +240,8 @@ and source control. The webhook path and retry rules are documented at
 ## User IDs
 
 By default, the middleware does not trust tool arguments for identity. Provide `userIdFn` and read identity from the MCP handler's trusted `extra` context, such as `extra.authInfo` or `extra.sessionId`.
+## Development dependencies
+
+This checkout uses the public SDK range `^0.6.0` and registry verifier 4.3.0.
+SDK 0.6.1 adds confirmation-resolution receipt metadata; publish that SDK
+before locking to it. Do not publish with sibling-file development links.
