@@ -240,9 +240,8 @@ and source control. The webhook path and retry rules are documented at
 ## User IDs
 
 By default, the middleware does not trust tool arguments for identity. Provide `userIdFn` and read identity from the MCP handler's trusted `extra` context, such as `extra.authInfo` or `extra.sessionId`.
-## Feature-branch dependency staging
+## Development dependencies
 
-This checkout tests the reviewed sibling SDK and its verifier 4.3.0 source.
-Before publishing this package, release the verifier and SDK, restore the
-registry SDK development range, and regenerate the npm lock. Do not publish
-with sibling-file development links.
+This checkout uses the public SDK range `^0.6.0` and registry verifier 4.3.0.
+SDK 0.6.1 adds confirmation-resolution receipt metadata; publish that SDK
+before locking to it. Do not publish with sibling-file development links.
