@@ -51,7 +51,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
-    "@allowly/sdk": "^0.6.0",
+    "@allowly/sdk": "file:../allowly-sdk-ts",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^20.19.40",
     "tsup": "^8.5.1",
