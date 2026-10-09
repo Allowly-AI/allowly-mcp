@@ -724,6 +724,7 @@
         }
       }
     </style>
+    <style>[hidden] { display: none !important; }</style>
   </head>
   <body>
     <main class="shell">
@@ -738,7 +739,48 @@
         </div>
       </header>
 
-      <section class="hero" aria-labelledby="page-title">
+      <section class="card panel" id="approval-lab" aria-labelledby="approval-lab-title" hidden>
+        <div class="section-heading">
+          <h1 id="approval-lab-title">Execute · approval continuation</h1>
+          <span class="section-note" id="approval-mode">HTML + Python SDK + LangGraph · local only</span>
+        </div>
+        <p class="trust-note" id="approval-description">
+          Start a fixed public GitHub read. Confirm and Escalate pause before GitHub is called.
+          Approve continues the same saved operation; Reject stops it. This panel does not use n8n or Slack.
+          Receipt mode records the customer-reported result, without a TLS witness.
+        </p>
+        <div class="hero-actions">
+          <button class="primary-button" id="approval-start-confirm" type="button" disabled>Start Confirm</button>
+          <button class="primary-button" id="approval-start-escalate" type="button" disabled>Start Escalate</button>
+          <button class="quiet-button" id="approval-refresh" type="button">Refresh saved runs</button>
+        </div>
+        <p class="microcopy" id="approval-adapter-status" role="status" aria-live="polite">Checking approval adapter.</p>
+        <label for="approval-history">Saved operation</label>
+        <select id="approval-history" aria-label="Saved operation"><option value="">No saved runs</option></select>
+        <div class="metric-grid">
+          <div class="metric"><div class="metric-label">Operation ID</div><div class="metric-value" id="approval-operation">—</div></div>
+          <div class="metric"><div class="metric-label">State</div><div class="metric-value" id="approval-state" aria-live="polite">Not started</div></div>
+          <div class="metric"><div class="metric-label">Policy result</div><div class="metric-value" id="approval-decision">—</div></div>
+          <div class="metric"><div class="metric-label">Reviewer choice</div><div class="metric-value" id="approval-choice">Not recorded</div></div>
+        </div>
+        <div class="detail-stack">
+          <div class="detail-row"><div class="detail-label">Review</div><div class="detail-value" id="approval-review">—</div></div>
+          <div class="detail-row"><div class="detail-label">Request under review</div><div class="detail-value" id="approval-request">Fixed public GitHub GET</div></div>
+          <div class="detail-row"><div class="detail-label">Provider dispatch attempts (local journal)</div><div class="detail-value" id="approval-attempts">0</div></div>
+          <div class="detail-row"><div class="detail-label">GitHub response</div><div class="detail-value" id="approval-http">Not called</div></div>
+          <div class="detail-row"><div class="detail-label">Decision / outcome receipts</div><div class="detail-value" id="approval-receipts">Not requested</div></div>
+        </div>
+        <div class="hero-actions" id="approval-choices" hidden>
+          <button class="primary-button" id="approval-approve" type="button">Approve</button>
+          <button class="quiet-button" id="approval-reject" type="button">Reject</button>
+        </div>
+        <p class="trust-note" id="approval-reviewer-note">Reviewer: customer-declared local test reviewer, not a verified human identity. Private request data and approval tokens stay in the adapter.</p>
+        <p id="approval-detail" role="status" aria-live="polite"></p>
+        <div class="error-box" id="approval-error" data-visible="false" role="alert"></div>
+        <pre id="approval-response">The public GitHub response will appear here after approval.</pre>
+      </section>
+
+      <section class="hero" id="witnessed-hero" aria-labelledby="page-title">
         <div>
           <p class="eyebrow">Witnessed public read · local demonstration</p>
           <h1 id="page-title">Allowly execution lab</h1>
@@ -759,7 +801,7 @@
         </div>
       </section>
 
-      <section class="card flow-card" aria-labelledby="flow-title">
+      <section class="card flow-card" id="witnessed-flow" aria-labelledby="flow-title">
         <div class="section-heading">
           <h2 id="flow-title">Execution path</h2>
           <span class="section-note">Same machine · separate processes</span>
@@ -795,7 +837,7 @@
         </div>
       </section>
 
-      <section class="dashboard" aria-label="Run results">
+      <section class="dashboard" id="witnessed-results" aria-label="Run results">
         <article class="card panel" aria-labelledby="run-title">
           <div class="run-state">
             <div>
@@ -868,7 +910,7 @@
         </article>
       </section>
 
-      <section class="details-grid" aria-label="Identity and adapter details">
+      <section class="details-grid" id="witnessed-details" aria-label="Identity and adapter details">
         <article class="card panel">
           <h2 class="panel-title">Trust and identity</h2>
           <div class="detail-stack">
@@ -1251,6 +1293,13 @@
           elements.refreshButton.disabled = true;
           try {
             const { payload } = await fetchJson("/api/status");
+            if (payload.lab_mode === "approval") {
+              for (const id of ["witnessed-hero", "witnessed-flow", "witnessed-results", "witnessed-details"]) {
+                document.querySelector(`#${id}`).hidden = true;
+              }
+              setServiceStatus("Approval continuation lab", "good");
+              return;
+            }
             setText(elements.apiBaseUrl, payload.api_base_url);
             setText(elements.actionName, payload.action);
             identityBeforeRun = displayValue(payload.identity);
@@ -1442,6 +1491,177 @@
 
         elements.targetUrl.textContent = FIXED_TARGET;
         loadStatus();
+      })();
+    </script>
+    <script>
+// Independent HTML approval client. It never calls n8n or starts a run on load.
+      (() => {
+        "use strict";
+        const panel = document.querySelector("#approval-lab");
+        const ids = ["start-confirm", "start-escalate", "refresh", "history", "adapter-status",
+          "operation", "state", "decision", "choice", "review", "attempts", "http",
+          "receipts", "choices", "approve", "reject", "detail", "error", "response", "request",
+          "mode", "description", "reviewer-note"];
+        const ui = Object.fromEntries(ids.map(id => [id, document.querySelector(`#approval-${id}`)]));
+        const base = "/api/approval-lab";
+        const target = "https://api.github.com/repos/octocat/Hello-World/issues?per_page=1&state=all&sort=created&direction=asc";
+        const pending = new Set(["starting", "waiting_for_review", "continuing"]);
+        let token = null, activeId = null, timer = null, generation = 0, busy = false, ready = false, currentJob = null, externalReview = false;
+
+        function error(message = "") {
+          ui.error.textContent = message;
+          ui.error.dataset.visible = message ? "true" : "false";
+        }
+        function buttons(job = currentJob) {
+          const waiting = job?.status === "waiting_for_review" && !job.choice;
+          ui.history.disabled = ui.refresh.disabled = busy;
+          ui.choices.hidden = externalReview || !waiting || busy;
+          ui.approve.disabled = ui.reject.disabled = externalReview || busy || !ready || !waiting;
+          ui["start-confirm"].disabled = ui["start-escalate"].disabled = busy || !ready || pending.has(job?.status);
+        }
+        async function request(path, body) {
+          const controller = new AbortController();
+          const timeout = window.setTimeout(() => controller.abort(), 20000);
+          try {
+            const response = await fetch(base + path, {
+              method: body === undefined ? "GET" : "POST", cache: "no-store", credentials: "same-origin",
+              headers: body === undefined ? {} : {"Content-Type": "application/json", "X-Demo-Token": token},
+              ...(body === undefined ? {} : {body: JSON.stringify(body)}), signal: controller.signal,
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || `Approval adapter returned HTTP ${response.status}`);
+            return payload;
+          } finally { window.clearTimeout(timeout); }
+        }
+        function render(job) {
+          if (!job || job.operation_id !== activeId) throw new Error("Unexpected operation returned by adapter.");
+          currentJob = job;
+          for (const option of ui.history.children) {
+            if (option.value === job.operation_id) option.textContent = `${job.scenario} · ${job.status} · ${job.operation_id}`;
+          }
+          ui.operation.textContent = job.operation_id;
+          ui.state.textContent = job.status;
+          ui.decision.textContent = [job.original_decision || job.scenario, job.final_decision].filter(Boolean).join(" → ");
+          ui.choice.textContent = job.choice ? `${job.choice} selected — ${job.choice_recorded === true ? "recorded"
+            : pending.has(job.status) ? "saving" : "not recorded"}` : "Not recorded";
+          ui.review.textContent = job.review ? `${job.review.kind}: ${job.review.id} · expires ${job.review.expires_at || "unknown"}` : "—";
+          ui.request.textContent = `${job.action || "GitHub read"} · ${job.resource || target} · input ${JSON.stringify(job.policy_context || {})}`;
+          ui.attempts.textContent = job.provider_attempts === null ? "Unknown — do not resend" : String(job.provider_attempts ?? 0);
+          ui.http.textContent = job.provider_http_status ? `HTTP ${job.provider_http_status}` : "No observed response";
+          ui.receipts.textContent = `${job.decision_receipt_state || "not requested"} / ${job.outcome_receipt_state || "not requested"}`;
+          ui.detail.textContent = job.detail || (job.status === "waiting_for_review"
+            ? externalReview ? "Review in the configured external channel. This page checks the recorded result; GitHub has not been called."
+              : "Saved and waiting. GitHub has not been called."
+            : "The SDK keeps the original operation ID. A refresh does not start another request.");
+          ui.response.textContent = typeof job.response_body === "string" ? job.response_body
+            : job.response_body ? JSON.stringify(job.response_body, null, 2)
+            : "No provider response recorded for this operation.";
+          error(job.error || "");
+          buttons(job);
+          return job;
+        }
+        async function poll(expectedGeneration) {
+          if (!activeId || expectedGeneration !== generation) return;
+          try {
+            const job = await request(`/jobs/${encodeURIComponent(activeId)}`);
+            if (expectedGeneration !== generation) return;
+            render(job);
+            if (pending.has(job.status)) timer = window.setTimeout(() => poll(expectedGeneration), 1000);
+          } catch (failure) {
+            ready = false;
+            buttons();
+            error(`${failure.message}. Refresh saved runs to recover; do not start a replacement operation.`);
+          }
+        }
+        async function select(operationId) {
+          generation += 1;
+          window.clearTimeout(timer);
+          activeId = operationId || null;
+          if (activeId) await poll(generation);
+        }
+        async function refresh(initial = false) {
+          try {
+            const status = await request("/status");
+            if (status.lab_mode !== "approval" || status.target_url !== target
+                || typeof status.csrf_token !== "string" || !status.csrf_token) {
+              throw new Error("Approval adapter configuration mismatch.");
+            }
+            panel.hidden = false;
+            token = status.csrf_token;
+            externalReview = status.external_review === true;
+            ready = status.ready === true;
+            ui.mode.textContent = externalReview ? "HTML + Python SDK + LangGraph · external review" : "HTML + Python SDK + LangGraph · local only";
+            ui.description.textContent = externalReview
+              ? "Start a fixed public GitHub read. Confirm and Escalate pause for review in the configured external channel, such as Slack. The recorded decision continues the same saved operation or stops it. Receipt mode records the customer-reported result, without a TLS witness. This client does not use n8n."
+              : "Start a fixed public GitHub read. Confirm and Escalate pause before GitHub is called. Approve continues the same saved operation; Reject stops it. This panel does not use n8n or Slack. Receipt mode records the customer-reported result, without a TLS witness.";
+            ui["reviewer-note"].textContent = externalReview
+              ? "This page cannot approve or reject. The configured external review channel records the choice; private request data and credentials stay in the adapter."
+              : "Reviewer: customer-declared local test reviewer, not a verified human identity. Private request data and approval tokens stay in the adapter.";
+            ui["adapter-status"].textContent = ready
+              ? `${externalReview ? "API ready · external review required" : "Local API ready"} · fixed public GET · receipt mode`
+              : "Allowly API not ready";
+            const jobs = Array.isArray(status.jobs) ? status.jobs : [];
+            ui.history.replaceChildren();
+            const blank = document.createElement("option");
+            blank.value = "";
+            blank.textContent = "Select a saved operation";
+            ui.history.append(blank);
+            for (const job of jobs) {
+              const option = document.createElement("option");
+              option.value = job.operation_id;
+              option.textContent = `${job.scenario} · ${job.status} · ${job.operation_id}`;
+              ui.history.append(option);
+            }
+            if (!activeId && jobs.length) activeId = jobs[0].operation_id;
+            ui.history.value = activeId || "";
+            error();
+            buttons();
+            if (activeId) await select(activeId);
+          } catch (failure) {
+            ready = false;
+            buttons();
+            if (!initial || !panel.hidden) error(failure.message);
+          }
+        }
+        async function start(scenario) {
+          if (!ready || busy) return;
+          busy = true;
+          buttons();
+          error();
+          try {
+            const job = await request("/jobs", {scenario});
+            activeId = job.operation_id;
+            busy = false;
+            render(job);
+            await refresh();
+          } catch (failure) {
+            ready = false;
+            error(`${failure.message}. Refresh saved runs before trying again.`);
+          } finally { busy = false; buttons(); }
+        }
+        async function resolve(choice) {
+          if (externalReview || !ready || busy || !activeId || ui.choices.hidden) return;
+          busy = true;
+          ui.choice.textContent = `${choice} selected — recording`;
+          buttons();
+          try {
+            const job = await request(`/jobs/${encodeURIComponent(activeId)}/resolve`, {choice});
+            busy = false;
+            render(job);
+            await select(activeId);
+          } catch (failure) {
+            ready = false;
+            error(`${failure.message}. Choice status is not confirmed; refresh saved runs.`);
+          } finally { busy = false; buttons(); }
+        }
+        ui["start-confirm"].addEventListener("click", () => start("confirm"));
+        ui["start-escalate"].addEventListener("click", () => start("escalate"));
+        ui.refresh.addEventListener("click", () => refresh());
+        ui.history.addEventListener("change", () => select(ui.history.value));
+        ui.approve.addEventListener("click", () => resolve("approve"));
+        ui.reject.addEventListener("click", () => resolve("reject"));
+        window.addEventListener("beforeunload", () => window.clearTimeout(timer));
+        refresh(true);
       })();
     </script>
   </body>
