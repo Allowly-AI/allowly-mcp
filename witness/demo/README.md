@@ -237,3 +237,11 @@ performs the full native exchange when loopback networking is available.
 On September 28, 2026, one full local test-signer run returned HTTP 200 from the
 fixed GitHub read. The native full proof verified and the local API accepted the
 compact attestation and outcome. That run did not use Cloud KMS.
+
+## Native approval continuation in the HTML lab
+
+For the independent receipt-mode Confirm/Escalate test, see
+[APPROVAL-LAB.md](APPROVAL-LAB.md). It uses Python SDK 0.7.0, a runtime supporting
+native continuation, and a private LangGraph SQLite checkpointer. Local review
+does not connect Slack; hosted mode can use the workspace's existing external
+review channel. It does not call n8n or replace the witnessed demo above.
