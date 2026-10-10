@@ -29,6 +29,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from existing_workspace import (
     ExistingWorkspaceError,
     fetch_auth0_token,
+    load_native_credential,
     load_config,
     verify_runtime_state,
 )
@@ -150,7 +151,10 @@ def verify_outcome_receipt(execution, receipt, public_keys, *, workspace_id, dec
 
 
 class ApiFailure(RuntimeError):
-    pass
+    def __init__(self, message, *, status_code=None, error_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
 
 
 class Demo:
@@ -208,7 +212,8 @@ class Demo:
                     code = str(detail.get("code", code))[:128]
             except (ValueError, AttributeError):
                 pass
-            raise ApiFailure(f"Local Allowly returned HTTP {exc.code}: {code}") from None
+            raise ApiFailure(f"Local Allowly returned HTTP {exc.code}: {code}",
+                             status_code=exc.code, error_code=code) from None
         except (URLError, TimeoutError, OSError):
             raise ApiFailure("Local Allowly is unavailable. No automatic resend was made.") from None
         if len(payload) > 2 * 1024 * 1024:
@@ -224,8 +229,12 @@ class Demo:
             ready, detail = False, "Local Allowly API is unavailable; execution will fail closed."
         return {"csrf_token": self.csrf_token, "ready": ready, "detail": detail,
                 "api_base_url": self.config["api_base_url"], "target_url": TARGET_URL,
-                "action": "github.issues.list",
-                "identity": ("Auth0 configured; token not checked yet"
+                "action": self.config.get("policy_action", "github.issues.list"),
+                "identity_provider": self.config.get("identity_provider", "auth0")
+                    if self.config.get("existing_workspace") else None,
+                "identity": ("Allowly credential configured; token not checked yet"
+                             if self.config.get("identity_provider") == "allowly"
+                             else "Auth0 configured; token not checked yet"
                              if self.config.get("existing_workspace")
                              else "Unverified runtime key"),
                 "existing_workspace": bool(self.config.get("existing_workspace")),
@@ -443,27 +452,33 @@ class Demo:
                 })
 
         try:
-            event("policy", "Checking this workspace's authorization, Auth0 binding and witness key")
+            event("policy", "Checking this workspace's authorization, agent identity and witness key")
             verify_runtime_state(self.api, self.config, json.loads(self.trusted_key.read_text()))
-            agent_token = fetch_auth0_token(self.config)
             sdk_root = WORKSPACE / "allowly-sdk-python"
             if str(sdk_root) not in sys.path:
                 sys.path.insert(0, str(sdk_root))
             from allowly import Allowly
+            native_identity = self.config.get("identity_provider") == "allowly"
+            credential = load_native_credential(self.config) if native_identity else None
+            agent_token = None if native_identity else fetch_auth0_token(self.config)
+            identity_options = {"agent_token_supplier": credential.token} if credential else {}
 
             async def execute():
                 async with Allowly(
                     self.credentials["api_key"], base_url=self.config["api_base_url"],
                     dangerously_allow_insecure_base_url=self.config["api_base_url"].startswith("http://127.0.0.1:"),
+                    **identity_options,
                 ) as client:
                     return await client.execute_http(
                         TARGET_URL, operation_id=run_id,
                         authorization_id=self.config["authorization_id"],
                         enabled_executable_id=self.config["enabled_executable_id"],
-                        catalog_operation_id="github.issues.list", action="github.issues.list",
+                        catalog_operation_id="github.issues.list",
+                        action=self.config.get("policy_action", "github.issues.list"),
                         method="GET", headers=HEADERS, body="", evidence_mode="witnessed",
                         policy_input={"resource": self.config["policy_resource"], "context": {}},
                         storage_dir=str(directory / "sdk"), agent_token=agent_token,
+                        timeout=150,
                     )
 
             event("witness", "The SDK is requesting permission and opening the trusted witness socket")
@@ -476,6 +491,7 @@ class Demo:
             })
             update(policy_decision=result.execution.decision,
                    approval_sha256=result.execution.approval_sha256,
+                   identity_provider=self.config.get("identity_provider", "auth0"),
                    identity_verification="accepted_by_runtime")
             if result.execution.decision != "allow":
                 update(state="complete", stage="not_allowed", report_state="not_started",
@@ -639,6 +655,8 @@ def main_existing(args):
         raise SystemExit(str(exc)) from None
     if args.local_test_signer != config["local_test_signer"]:
         raise SystemExit("Explicit --local-test-signer must match the private config")
+    if config.get("identity_provider") == "allowly" and not args.sdk_wss:
+        raise SystemExit("Allowly native identity requires --sdk-wss so each request gets a fresh agent token")
     if not config["local_test_signer"] and config["witness_kms_key_version"].startswith(
         "projects/test-only/"
     ):
@@ -669,7 +687,8 @@ def main_existing(args):
     if args.preflight:
         try:
             verify_runtime_state(demo.api, config, trusted_key)
-            fetch_auth0_token(config)
+            if config.get("identity_provider") != "allowly":
+                fetch_auth0_token(config)
             if args.sdk_wss:
                 sdk_root = WORKSPACE / "allowly-sdk-python"
                 if str(sdk_root) not in sys.path:
@@ -680,7 +699,7 @@ def main_existing(args):
                     raise ExistingWorkspaceError("Installed SDK witness key or local bridge CA is missing")
         except (ApiFailure, ExistingWorkspaceError, ValueError) as exc:
             raise SystemExit(str(exc)) from None
-        print("Existing workspace, Auth0 connection and witness key checked. No GitHub request was sent.")
+        print("Existing workspace, agent identity and witness key checked. No GitHub request was sent.")
         return
     try:
         serve(demo, args, state)
@@ -704,7 +723,7 @@ def main():
     parser.add_argument("--existing-config", type=Path,
                         help="owner-only JSON for a configured local Allowly workspace")
     parser.add_argument("--preflight", action="store_true",
-                        help="check existing workspace and Auth0 setup without contacting GitHub")
+                        help="check existing workspace and agent identity without contacting GitHub")
     parser.add_argument("--sdk-wss", action="store_true",
                         help="run the existing workspace through the Python SDK and local WSS bridge")
     args = parser.parse_args()

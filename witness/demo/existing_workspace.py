@@ -8,6 +8,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
@@ -18,6 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_DIR = ROOT.parent.parent / "allowly_app"
 TARGET_RESOURCE = "github:octocat/Hello-World"
 TARGET_ACTION = "github.issues.list"
+SUPPORTED_POLICY_ACTIONS = ("github.read", TARGET_ACTION)
+UNVERIFIED_RUNTIME_OWNER = {
+    "kind": "unverified", "source": "runtime_api_key", "status": "unverified",
+}
 PUBLIC_TEST_POINT = bytes.fromhex(
     "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296"
 )
@@ -73,6 +78,29 @@ def _required(config: dict, name: str, *, maximum: int = 4096) -> str:
     return value
 
 
+def load_native_credential(config: dict):
+    """Read the local signing key without putting it into browser/run state."""
+    if config.get("identity_provider") != "allowly":
+        raise ExistingWorkspaceError("Allowly native identity is not configured")
+    path = Path(_required(config, "agent_credential_file", maximum=1024))
+    if not path.is_absolute():
+        raise ExistingWorkspaceError("Use an absolute agent-credential path")
+    value = _private_json(path)
+    sdk_root = ROOT.parent.parent / "allowly-sdk-python"
+    if sdk_root.is_dir() and str(sdk_root) not in sys.path:
+        sys.path.insert(0, str(sdk_root))
+    try:
+        from allowly import NativeAgentCredential
+
+        credential = NativeAgentCredential(value)
+    except (ImportError, ValueError, TypeError) as exc:
+        raise ExistingWorkspaceError("The local Allowly agent credential is invalid or unavailable") from exc
+    if (credential.workspace_id != config.get("workspace_id")
+            or credential.agent_id != config.get("agent_id")):
+        raise ExistingWorkspaceError("The local agent credential belongs to a different workspace or agent")
+    return credential
+
+
 def load_config(path: Path) -> tuple[dict, dict, dict]:
     """Load a fixed read-only action. Never copy credentials into browser state."""
     private = _private_json(path)
@@ -95,22 +123,33 @@ def load_config(path: Path) -> tuple[dict, dict, dict]:
         "authorization_id": _required(private, "authorization_id", maximum=128),
         "enabled_executable_id": _required(private, "enabled_executable_id", maximum=128),
         "agent_id": _required(private, "agent_id", maximum=128),
-        "auth0_subject": _required(private, "auth0_subject", maximum=136),
-        "auth0_issuer": _required(private, "auth0_issuer", maximum=256),
-        "auth0_audience": _required(private, "auth0_audience", maximum=512),
+        "identity_provider": private.get("identity_provider", "auth0"),
+        "policy_action": private.get("policy_action", TARGET_ACTION),
         "policy_resource": TARGET_RESOURCE,
-        "identity_status": "auth0_configured_pending_check",
         "local_test_signer": private.get("local_test_signer") is True,
     }
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}@clients", config["auth0_subject"]):
-        raise ExistingWorkspaceError("Invalid Auth0 machine subject")
-    issuer = urlsplit(config["auth0_issuer"])
-    if (issuer.scheme != "https" or not issuer.hostname or issuer.path != "/"
-            or issuer.query or issuer.fragment or issuer.username or issuer.password):
-        raise ExistingWorkspaceError("Invalid Auth0 issuer")
-    audience = urlsplit(config["auth0_audience"])
-    if audience.scheme != "https" or not audience.hostname or audience.username or audience.password:
-        raise ExistingWorkspaceError("Invalid Auth0 audience")
+    if config["policy_action"] not in SUPPORTED_POLICY_ACTIONS:
+        raise ExistingWorkspaceError("The demo supports only its fixed GitHub read actions")
+    if config["identity_provider"] == "allowly":
+        config["agent_credential_file"] = _required(private, "agent_credential_file", maximum=1024)
+        load_native_credential(config)
+        config["identity_status"] = "allowly_configured_pending_check"
+    elif config["identity_provider"] == "auth0":
+        config.update({name: _required(private, name, maximum=maximum) for name, maximum in (
+            ("auth0_subject", 136), ("auth0_issuer", 256), ("auth0_audience", 512),
+        )})
+        config["identity_status"] = "auth0_configured_pending_check"
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}@clients", config["auth0_subject"]):
+            raise ExistingWorkspaceError("Invalid Auth0 machine subject")
+        issuer = urlsplit(config["auth0_issuer"])
+        if (issuer.scheme != "https" or not issuer.hostname or issuer.path != "/"
+                or issuer.query or issuer.fragment or issuer.username or issuer.password):
+            raise ExistingWorkspaceError("Invalid Auth0 issuer")
+        audience = urlsplit(config["auth0_audience"])
+        if audience.scheme != "https" or not audience.hostname or audience.username or audience.password:
+            raise ExistingWorkspaceError("Invalid Auth0 audience")
+    else:
+        raise ExistingWorkspaceError("Unsupported agent identity provider")
     version = _required(private, "witness_kms_key_version", maximum=512)
     try:
         key_ref, *_ = workspace_key(version, workspace_id)
@@ -144,7 +183,7 @@ def load_config(path: Path) -> tuple[dict, dict, dict]:
 
 
 def verify_runtime_state(api, config: dict, trusted_key: dict) -> None:
-    """Check live authorization, Auth0 binding and KMS key before any provider send."""
+    """Check live authorization, identity binding and KMS key before any provider send."""
     workspace_id, agent_id = config["workspace_id"], config["agent_id"]
     page = api("/v1/authorizations?" + urlencode({"agent_id": agent_id, "limit": 100}))
     items = page.get("items") if isinstance(page, dict) else None
@@ -161,7 +200,7 @@ def verify_runtime_state(api, config: dict, trusted_key: dict) -> None:
         raise ExistingWorkspaceError("The demo requires one narrow GitHub read permission")
     action = actions[0]
     operations = action.get("executable_operations") if isinstance(action, dict) else None
-    if (not isinstance(action, dict) or action.get("name") != TARGET_ACTION
+    if (not isinstance(action, dict) or action.get("name") != config.get("policy_action", TARGET_ACTION)
             or action.get("constraints") != {"resource_pattern": TARGET_RESOURCE}
             or not isinstance(operations, list) or len(operations) != 1
             or not isinstance(operations[0], dict)
@@ -173,29 +212,71 @@ def verify_runtime_state(api, config: dict, trusted_key: dict) -> None:
     protected = provenance.get("protected_item") if isinstance(provenance, dict) else None
     identity = protected.get("identity") if isinstance(protected, dict) else None
     owner = protected.get("owner") if isinstance(protected, dict) else None
+    native_identity = config.get("identity_provider", "auth0") == "allowly"
+    unverified_owner = native_identity and owner == UNVERIFIED_RUNTIME_OWNER
     if (not isinstance(identity, dict) or identity.get("mode") != "provider"
-            or identity.get("provider") != "auth0" or protected.get("id") != agent_id
-            or not isinstance(owner, dict) or owner.get("status") != "customer_declared"
-            or not owner.get("account_user_id")
-            or any(identity.get(name) != config["auth0_" + name]
-                   for name in ("subject", "issuer", "audience"))):
-        raise ExistingWorkspaceError("The authorization has no matching Auth0 identity snapshot")
-    binding = api(
-        f"/internal/workspaces/{workspace_id}/identity-bindings?" + urlencode({"agent_id": agent_id}),
-        internal=True,
-    )
-    if (not isinstance(binding, dict) or binding.get("status") != "configured"
-            or binding.get("provider") != "auth0" or binding.get("agent_id") != agent_id
-            or binding.get("owner_account_user_id") != owner["account_user_id"]
-            or identity.get("binding_id") != binding.get("binding_id")
-            or any(binding.get(name) != config["auth0_" + name]
-                   for name in ("subject", "issuer", "audience"))):
-        raise ExistingWorkspaceError("The current Auth0 binding differs from the authorization")
-    connection = api(f"/internal/workspaces/{workspace_id}/identity/auth0", internal=True)
-    if (not isinstance(connection, dict) or connection.get("status") != "configured"
-            or connection.get("issuer") != config["auth0_issuer"]
-            or connection.get("audience") != config["auth0_audience"]):
-        raise ExistingWorkspaceError("The workspace Auth0 connection changed")
+            or protected.get("id") != agent_id
+            or not isinstance(owner, dict)
+            or (not unverified_owner and (
+                owner.get("status") != "customer_declared"
+                or not isinstance(owner.get("account_user_id"), str)
+                or not owner["account_user_id"]
+            ))):
+        raise ExistingWorkspaceError("The authorization has no matching identity and owner snapshot")
+    try:
+        binding = api(
+            f"/internal/workspaces/{workspace_id}/identity-bindings?" + urlencode({"agent_id": agent_id}),
+            internal=True,
+        )
+    except Exception as exc:
+        if (unverified_owner and getattr(exc, "status_code", None) == 404
+                and getattr(exc, "error_code", None) == "agent_identity_binding_not_found"):
+            binding = None
+        else:
+            raise ExistingWorkspaceError("The current agent owner could not be checked") from None
+    else:
+        if unverified_owner:
+            raise ExistingWorkspaceError("The current agent owner differs from the unverified authorization")
+    if not unverified_owner and (not isinstance(binding, dict) or binding.get("status") != "configured"
+            or binding.get("agent_id") != agent_id
+            or binding.get("owner_account_user_id") != owner["account_user_id"]):
+        raise ExistingWorkspaceError("The current agent owner differs from the authorization")
+    if native_identity:
+        credential = load_native_credential(config)
+        expected_identity = {
+            "provider": "allowly", "credential_type": "ed25519_jwt",
+            "issuer": "allowly-agent", "audience": workspace_id,
+            "subject": agent_id, "binding_id": credential.binding_id,
+        }
+        if (any(identity.get(name) != value for name, value in expected_identity.items())
+                or (binding is not None and binding.get("provider") is not None)):
+            raise ExistingWorkspaceError("The authorization has no matching Allowly identity snapshot")
+        current = api(
+            f"/internal/workspaces/{workspace_id}/agent-credentials?" + urlencode({"agent_id": agent_id}),
+            internal=True,
+        )
+        keys = current.get("credentials") if isinstance(current, dict) else None
+        if (not isinstance(current, dict) or current.get("agent_id") != agent_id
+                or not isinstance(keys, list) or not any(
+                    isinstance(key, dict) and key.get("status") == "active"
+                    and key.get("key_id") == credential.key_id
+                    and key.get("binding_id") == credential.binding_id
+                    and key.get("agent_id") == agent_id for key in keys
+                )):
+            raise ExistingWorkspaceError("The local Allowly agent credential is not active")
+    else:
+        if (identity.get("provider") != "auth0"
+                or binding.get("provider") != "auth0"
+                or identity.get("binding_id") != binding.get("binding_id")
+                or any(identity.get(name) != config["auth0_" + name]
+                       or binding.get(name) != config["auth0_" + name]
+                       for name in ("subject", "issuer", "audience"))):
+            raise ExistingWorkspaceError("The current Auth0 binding differs from the authorization")
+        connection = api(f"/internal/workspaces/{workspace_id}/identity/auth0", internal=True)
+        if (not isinstance(connection, dict) or connection.get("status") != "configured"
+                or connection.get("issuer") != config["auth0_issuer"]
+                or connection.get("audience") != config["auth0_audience"]):
+            raise ExistingWorkspaceError("The workspace Auth0 connection changed")
     witness = api(f"/internal/workspaces/{workspace_id}/witness-key", internal=True)
     if (not isinstance(witness, dict) or witness.get("workspace_id") != workspace_id
             or witness.get("kms_key_version") != config["witness_kms_key_version"]

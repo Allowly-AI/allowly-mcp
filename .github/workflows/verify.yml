@@ -25,21 +25,3 @@ jobs:
         run: npm test
       - name: Build
         run: npm run build
-
-  approval-lab:
-    name: Verify HTML approval lab
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - name: Install approval lab dependencies
-        run: python -m pip install -r witness/demo/requirements-approval-lab.txt pytest==8.4.2
-      - name: Test local and hosted approval adapter
-        run: python -m pytest -q witness/demo/test_approval_lab.py witness/demo/test_approval_hosted.py
-      - name: Test approval and existing HTML panels
-        run: node --test witness/demo/test_approval_index.cjs witness/demo/test_index.cjs

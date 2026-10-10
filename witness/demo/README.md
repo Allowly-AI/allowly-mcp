@@ -49,6 +49,29 @@ private local directory; neither is sent to the browser or GitHub.
 
 ## Use an existing local workspace
 
+### Allowly-native agent identity
+
+An enrolled agent does not need Auth0 or an MCP client. Use the existing
+workspace configuration below, replacing the three `auth0_*` fields with:
+
+```json
+{
+  "identity_provider": "allowly",
+  "agent_credential_file": "/absolute/private/path/to/enrolled-agent.json",
+  "policy_action": "github.read"
+}
+```
+
+Use `--sdk-wss --preflight` first, then start the same command without
+`--preflight`. The credential must be owner-only and belong to the exact
+workspace and agent. Preflight checks its live key, owner, immutable identity
+snapshot, narrow authorization, and witness public key. The SDK signs a fresh
+agent token for each API request; the private key stays in the adapter process.
+The fixed catalog operation remains `github.issues.list`, separate from the
+configured policy action. Auth0 mode remains supported.
+
+### Auth0 agent identity
+
 The adapter can also use a workspace already configured in the local Allowly
 app and runtime. This mode does not create a second workspace. Keep the app's
 `allowly-api` Docker service and the runtime API running. The app service mints
@@ -237,11 +260,3 @@ performs the full native exchange when loopback networking is available.
 On September 28, 2026, one full local test-signer run returned HTTP 200 from the
 fixed GitHub read. The native full proof verified and the local API accepted the
 compact attestation and outcome. That run did not use Cloud KMS.
-
-## Native approval continuation in the HTML lab
-
-For the independent receipt-mode Confirm/Escalate test, see
-[APPROVAL-LAB.md](APPROVAL-LAB.md). It uses Python SDK 0.7.0, a runtime supporting
-native continuation, and a private LangGraph SQLite checkpointer. Local review
-does not connect Slack; hosted mode can use the workspace's existing external
-review channel. It does not call n8n or replace the witnessed demo above.
