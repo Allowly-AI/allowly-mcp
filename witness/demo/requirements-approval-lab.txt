@@ -1,5 +1,0 @@
-# Local orchestration only; no LLM, hosted LangGraph service, or Slack.
-allowly[verifier]==0.7.0
-allowly-receipt-format==4.3.1
-langgraph==1.2.12
-langgraph-checkpoint-sqlite==3.1.1
