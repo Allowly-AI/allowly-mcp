@@ -33,6 +33,8 @@ def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--port", type=int, default=8811)
+    parser.add_argument("--opa-url", default="http://127.0.0.1:8181",
+                        help="existing protected local OPA daemon; never started or stopped by this demo")
     parser.add_argument("--repository", default="octocat/Hello-World")
     parser.add_argument("--witness-url", required=True)
     parser.add_argument("--notary-public-key", type=Path, required=True)
@@ -104,6 +106,8 @@ def configure(args: argparse.Namespace) -> dict:
         "ALLOWLY_API_BASE_URL": f"http://127.0.0.1:{args.port}",
         "ALLOWLY_ISSUER_NAME": "Allowly localhost demo (unsigned receipts)",
         "ALLOWLY_CONTROL_PLANE_BASE_URL": "",
+        "ALLOWLY_OPA_URL": args.opa_url,
+        "ALLOWLY_ENGINE_ARTIFACT_ROOT": str(args.state_dir / "engine-artifacts"),
         "CORS_ALLOWED_ORIGINS": "",
         "ALLOWLY_WITNESS_URL": args.witness_url,
         "ALLOWLY_WITNESS_VERIFIER_BIN": str(args.verifier_bin),
@@ -144,10 +148,15 @@ async def seed(args: argparse.Namespace, secret_values: dict) -> dict:
         Workspace,
     )
     from app.services import executable_catalog
+    from app.services.authorization_policy import authorization_from_policy, load_authorization_policy
+    from app.services.policy_definition import PolicyDefinition
+    from app.services.policy_versions import create_policy_version, policy_reference
     from app.services.signing import api_key_lookup_digest, mint_api_key
 
     settings.validate_runtime()
     config_path = args.state_dir / "runtime-config.json"
+    if config_path.exists() and not isinstance(json.loads(config_path.read_text()).get("policy_ref"), dict):
+        raise RuntimeError("Demo state has no retained policy reference; choose a new private --state-dir")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
 
@@ -162,11 +171,17 @@ async def seed(args: argparse.Namespace, secret_values: dict) -> dict:
             authorization = await db.get(Authorization, config["authorization_id"])
             if authorization is None or "api_key" not in secret_values:
                 raise RuntimeError("Demo state is incomplete; choose a new --state-dir")
+            policy = await load_authorization_policy(db, authorization)
+            if config["policy_ref"] != policy_reference(policy, workspace_id=authorization.workspace_id):
+                raise RuntimeError("Demo policy reference changed; choose a new private --state-dir")
+            if config.get("policy_definition") != policy.policy_definition:
+                raise RuntimeError("Demo retained definition changed; choose a new private --state-dir")
             expiry = authorization.expires_at.replace(tzinfo=timezone.utc)
             if expiry <= datetime.now(timezone.utc):
                 raise RuntimeError("Demo authorization expired; choose a new --state-dir")
             config["api_base_url"] = settings.allowly_api_base_url
             config["witness_url"] = args.witness_url
+            config["opa_url"] = settings.opa_url
             write_private_json(config_path, config)
             await engine.dispose()
             return config
@@ -181,18 +196,24 @@ async def seed(args: argparse.Namespace, secret_values: dict) -> dict:
         provider = executable_catalog.provider("github-rest")
         snapshot = executable_catalog.enabled_snapshot(provider, origin="https://api.github.com")
         operation = next(item for item in snapshot["operations"] if item["operation_id"] == action)
-        actions = [{
-            "name": action,
-            "constraints": {"resource_pattern": resource},
-            "executable_operations": [{
-                "enabled_executable_id": enabled_id,
-                "provider_id": provider["provider_id"],
-                "operation_id": action,
-                "catalog_revision": executable_catalog.catalog_revision(),
-                "definition_fingerprint": operation["definition_fingerprint"],
-                "minimum_evidence_mode": "witnessed",
+        definition = PolicyDefinition.model_validate({
+            "profile": "allowly.policy.v1", "agent_id": agent_id,
+            "actions": [{
+                "policy": {"profile": "allowly.basic.v1", "action": action,
+                           "default_decision": "allow", "default_target": None,
+                           "fields": {}, "rules": []},
+                "guards": {"resource_pattern": resource},
+                "executable_operations": [{
+                    "enabled_executable_id": enabled_id,
+                    "provider_id": provider["provider_id"],
+                    "operation_id": action,
+                    "catalog_revision": executable_catalog.catalog_revision(),
+                    "definition_fingerprint": operation["definition_fingerprint"],
+                    "minimum_evidence_mode": "witnessed",
+                }],
             }],
-        }]
+            "default_expiry_days": 1,
+        }).normalized()
         raw_key, prefix = mint_api_key(env="test")
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(days=1)
@@ -207,19 +228,6 @@ async def seed(args: argparse.Namespace, secret_values: dict) -> dict:
                    lookup_digest=api_key_lookup_digest(raw_key), role="runtime"),
             ActionDefinition(id="action_local_github_read", workspace_id=workspace_id,
                              name=action, description="Read public GitHub issues"),
-            AgentPolicy(id=policy_id, workspace_id=workspace_id, agent_id=agent_id,
-                        actions=actions, single_live_policy_exempt=True,
-                        description="Local demo: witnessed read of one public repository"),
-            Authorization(
-                id=authorization_id, workspace_id=workspace_id, user_id="local-demo-user",
-                agent_id=agent_id, policy_id=policy_id, actions=actions,
-                requires_confirm_for=[], requires_escalation_for=[], requires_deny_for=[],
-                escalation_targets={}, metadata_={}, expires_at=expires_at,
-                authorization_provenance={
-                    "grantor": {"kind": "unverified", "source": "runtime_api_key"},
-                    "agent_identity": {"kind": "unverified", "source": "runtime_api_key"},
-                },
-            ),
             EnabledExecutable(
                 id=enabled_id, workspace_id=workspace_id, provider_id=provider["provider_id"],
                 provider_name=provider["provider_name"], category=provider["category"],
@@ -228,6 +236,19 @@ async def seed(args: argparse.Namespace, secret_values: dict) -> dict:
             ),
             SealActivation(id=1, enabled=True),
         ])
+        policy = await create_policy_version(
+            db, policy=AgentPolicy(id=policy_id, workspace_id=workspace_id, agent_id=agent_id,
+                                  description="Local demo: witnessed read of one public repository"),
+            definition=definition,
+        )
+        db.add(authorization_from_policy(
+            policy=policy, workspace_id=workspace_id, authorization_id=authorization_id,
+            user_id="local-demo-user", actions=[action], metadata={}, expires_at=expires_at,
+            provenance={
+                "grantor": {"kind": "unverified", "source": "runtime_api_key"},
+                "agent_identity": {"kind": "unverified", "source": "runtime_api_key"},
+            },
+        ))
         await db.commit()
         secret_values["api_key"] = raw_key
         write_private_json(args.state_dir / "runtime-secrets.json", secret_values)
@@ -239,7 +260,9 @@ async def seed(args: argparse.Namespace, secret_values: dict) -> dict:
             "catalog_operation_id": action,
             "catalog_revision": executable_catalog.catalog_revision(),
             "definition_fingerprint": operation["definition_fingerprint"],
-            "policy_id": policy_id,
+            "policy_ref": policy_reference(policy, workspace_id=workspace_id),
+            "policy_definition": definition,
+            "opa_url": settings.opa_url,
             "action": action,
             "agent_id": agent_id,
             "identity_status": "unverified_runtime_api_key",

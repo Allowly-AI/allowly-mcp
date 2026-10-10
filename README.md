@@ -86,7 +86,7 @@ Tool arguments are not copied into policy context automatically. Select the exac
 When `agentTokenFn` is configured, an error or an empty result denies the tool
 before `/check`; it never falls back to an API-key-only request.
 
-Authorization creation stays outside this package. Store the user's Allowly authorization ID in your app, then resolve it in `authorizationIdFn`.
+Authorization creation stays outside this package. Use the SDK to select an exact logical `policy_id` and positive integer `policy_version`, with an optional list of action names from that retained edition. Inline rules or decision flags are not grant inputs. Store the returned raw `policy_ref` with the user's authorization ID, then resolve that ID in `authorizationIdFn`. Setup credentials author policy definitions; runtime API keys create grants and check them. Policy Preview is provisional OPA evidence, not permission to run a tool.
 
 ## Local Execute tools
 
@@ -193,15 +193,15 @@ The helper is Allowly's Rust adapter around unchanged TLSNotary libraries, pinne
 to `v0.1.0-alpha.15` / `47aee45b53e06648c1b2ad3689b367b8c923fdec`.
 It is not an upstream TLSNotary executable renamed by Allowly.
 
-Both paths use assets from the `witness-v0.1.0` release in
-`Allowly-AI/allowly-mcp`. The CLI verifies a pinned `SHA256SUMS` digest, then
-checks the selected archive before running or building it. Automatic installs
-remain blocked until reviewed release assets are published and that manifest
-digest is pinned in the CLI. They do not fall back to an unverified download.
-Until then, use a reviewed offline archive or helper:
+The current CLI defaults to `witness-v0.1.1` in `Allowly-AI/allowly-mcp`.
+It verifies a pinned SHA-256 digest for `SHA256SUMS`, then checks the selected
+archive before running or building it. Missing assets or checksum mismatches
+stop setup; there is no unverified fallback. This local rebuild does not
+establish remote asset availability or a tested fresh archive installation.
+You can also use a reviewed offline archive or helper:
 
 ```bash
-allowly setup witness --archive /path/to/allowly-witness-poc-0.1.0-<target>.tar.gz --sha256 <archive-sha256>
+allowly setup witness --archive /path/to/allowly-witness-poc-0.1.1-<target>.tar.gz --sha256 <archive-sha256>
 allowly setup witness --helper /absolute/path/to/allowly-witness-poc
 ```
 
@@ -242,6 +242,8 @@ and source control. The webhook path and retry rules are documented at
 By default, the middleware does not trust tool arguments for identity. Provide `userIdFn` and read identity from the MCP handler's trusted `extra` context, such as `extra.authInfo` or `extra.sessionId`.
 ## Development dependencies
 
-This checkout uses the public SDK range `^0.6.0` and registry verifier 4.3.0.
-SDK 0.6.1 adds confirmation-resolution receipt metadata; publish that SDK
-before locking to it. Do not publish with sibling-file development links.
+This local OPA checkout links to the sibling SDK source and its unpublished
+verifier 5.0.0 build. Receipt verification accepts wire 5 only. Signature checks
+do not replay policy or prove that a provider request happened. Native OPA
+replay is a separate check with the retained policy, input, and engine artifacts.
+Do not publish with sibling-file development links.

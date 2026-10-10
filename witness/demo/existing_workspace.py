@@ -78,6 +78,26 @@ def _required(config: dict, name: str, *, maximum: int = 4096) -> str:
     return value
 
 
+def _policy_material(config: dict) -> tuple[dict, dict]:
+    """Validate the customer-held edition, not a server lookup or replay claim."""
+    sdk_root = ROOT.parent.parent / "allowly-sdk-python"
+    if not (sdk_root / "allowly/policies.py").is_file():
+        raise ExistingWorkspaceError("The sibling SDK policy validator is unavailable")
+    if str(sdk_root) not in sys.path:
+        sys.path.insert(0, str(sdk_root))
+    try:
+        from allowly.policies import definition_digest, parse_policy_reference, validate_policy_definition
+
+        reference = parse_policy_reference(config.get("policy_ref"))
+        definition = validate_policy_definition(config.get("policy_definition"))
+        if (definition["agent_id"] != config.get("agent_id")
+                or definition_digest(definition) != reference["definition_sha256"]):
+            raise ValueError("Policy snapshot does not match its reference or agent")
+    except (ImportError, ValueError, TypeError) as exc:
+        raise ExistingWorkspaceError("A matching full retained policy definition and exact reference are required") from exc
+    return reference, definition
+
+
 def load_native_credential(config: dict):
     """Read the local signing key without putting it into browser/run state."""
     if config.get("identity_provider") != "allowly":
@@ -130,6 +150,10 @@ def load_config(path: Path) -> tuple[dict, dict, dict]:
     }
     if config["policy_action"] not in SUPPORTED_POLICY_ACTIONS:
         raise ExistingWorkspaceError("The demo supports only its fixed GitHub read actions")
+    config["policy_ref"], config["policy_definition"] = _policy_material({
+        "agent_id": config["agent_id"], "policy_ref": private.get("policy_ref"),
+        "policy_definition": private.get("policy_definition"),
+    })
     if config["identity_provider"] == "allowly":
         config["agent_credential_file"] = _required(private, "agent_credential_file", maximum=1024)
         load_native_credential(config)
@@ -195,13 +219,18 @@ def verify_runtime_state(api, config: dict, trusted_key: dict) -> None:
     )
     if authorization is None or authorization.get("agent_id") != agent_id:
         raise ExistingWorkspaceError("The configured authorization is not active for this agent")
+    reference, definition = _policy_material(config)
+    live_reference, _ = _policy_material({**config, "policy_ref": authorization.get("policy_ref")})
+    if live_reference != reference:
+        raise ExistingWorkspaceError("The live authorization does not pin the supplied retained edition")
     actions = authorization.get("actions")
-    if not isinstance(actions, list) or len(actions) != 1:
+    action_name = config.get("policy_action", TARGET_ACTION)
+    if actions != [action_name]:
         raise ExistingWorkspaceError("The demo requires one narrow GitHub read permission")
-    action = actions[0]
-    operations = action.get("executable_operations") if isinstance(action, dict) else None
-    if (not isinstance(action, dict) or action.get("name") != config.get("policy_action", TARGET_ACTION)
-            or action.get("constraints") != {"resource_pattern": TARGET_RESOURCE}
+    action = next((entry for entry in definition["actions"]
+                   if entry["policy"]["action"] == action_name), None)
+    operations = action["executable_operations"] if action is not None else None
+    if (action is None or action["guards"] != {"resource_pattern": TARGET_RESOURCE}
             or not isinstance(operations, list) or len(operations) != 1
             or not isinstance(operations[0], dict)
             or operations[0].get("enabled_executable_id") != config["enabled_executable_id"]
