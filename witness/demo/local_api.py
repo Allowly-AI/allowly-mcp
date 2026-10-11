@@ -200,7 +200,7 @@ async def seed(args: argparse.Namespace, secret_values: dict) -> dict:
             "profile": "allowly.policy.v1", "agent_id": agent_id,
             "actions": [{
                 "policy": {"profile": "allowly.basic.v1", "action": action,
-                           "default_decision": "allow", "default_target": None,
+                           "decision": "allow", "target": None,
                            "fields": {}, "rules": []},
                 "guards": {"resource_pattern": resource},
                 "executable_operations": [{

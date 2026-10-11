@@ -44,7 +44,7 @@ def retained_policy_fixture(agent_id: str, enabled_id: str, action: str) -> dict
         "profile": "allowly.policy.v1", "agent_id": agent_id, "default_expiry_days": 1,
         "actions": [{
             "policy": {"profile": "allowly.basic.v1", "action": action,
-                       "default_decision": "allow", "default_target": None,
+                       "decision": "allow", "target": None,
                        "fields": {}, "rules": []},
             "guards": {"resource_pattern": "github:octocat/Hello-World"},
             "executable_operations": [{
