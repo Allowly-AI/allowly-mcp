@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
 import existing_workspace
 from native_runner import _fingerprint
+from test_demo import retained_policy_fixture
 
 
 class OwnerLookupFailure(RuntimeError):
@@ -66,6 +67,7 @@ class NativeIdentityDemoTest(unittest.TestCase):
             "trusted_key_file": str(trust_path), "notary_fingerprint_sha256": _fingerprint(key),
             "local_test_signer": True, "api_key": "test-runtime-key", "internal_token": "test-internal-token",
         }
+        private.update(retained_policy_fixture(self.AGENT_ID, private["enabled_executable_id"], "github.read"))
         config_path = state / "config.json"
         self._write(config_path, private)
         return config_path, private, credential, key
@@ -74,13 +76,7 @@ class NativeIdentityDemoTest(unittest.TestCase):
         return {
             "/v1/authorizations": {"items": [{
                 "id": config["authorization_id"], "agent_id": self.AGENT_ID,
-                "actions": [{
-                    "name": "github.read", "constraints": {"resource_pattern": "github:octocat/Hello-World"},
-                    "executable_operations": [{
-                        "enabled_executable_id": config["enabled_executable_id"],
-                        "operation_id": "github.issues.list", "minimum_evidence_mode": "witnessed",
-                    }],
-                }],
+                "actions": ["github.read"], "policy_ref": config["policy_ref"],
                 "authorization_provenance": {"protected_item": {
                     "id": self.AGENT_ID,
                     "identity": {
@@ -196,12 +192,9 @@ class NativeIdentityDemoTest(unittest.TestCase):
                 ("wrong current agent", lambda data: data["agent-credentials"]["credentials"][0].update(agent_id="other-agent")),
                 ("wrong owner", lambda data: data["identity-bindings"].update(owner_account_user_id="other-owner")),
                 ("conflicting provider", lambda data: data["identity-bindings"].update(provider="auth0")),
-                ("wrong action", lambda data: data["/v1/authorizations"]["items"][0]["actions"][0].update(name="github.issues.list")),
-                ("wrong operation", lambda data: data["/v1/authorizations"]["items"][0]["actions"][0]["executable_operations"][0].update(operation_id="github.pull_requests.list")),
-                ("wrong evidence mode", lambda data: data["/v1/authorizations"]["items"][0]["actions"][0]["executable_operations"][0].update(minimum_evidence_mode="receipt")),
-                ("wrong resource", lambda data: data["/v1/authorizations"]["items"][0]["actions"][0].update(constraints={"resource_pattern": "*"})),
+                ("wrong action", lambda data: data["/v1/authorizations"]["items"][0].update(actions=["github.issues.list"])),
+                ("wrong retained ref", lambda data: data["/v1/authorizations"]["items"][0].update(policy_ref={**config["policy_ref"], "policy_version": 2})),
                 ("extra action", lambda data: data["/v1/authorizations"]["items"][0]["actions"].append(copy.deepcopy(data["/v1/authorizations"]["items"][0]["actions"][0]))),
-                ("extra operation", lambda data: data["/v1/authorizations"]["items"][0]["actions"][0]["executable_operations"].append(copy.deepcopy(data["/v1/authorizations"]["items"][0]["actions"][0]["executable_operations"][0]))),
                 ("changed witness key", lambda data: data["witness-key"].update(fingerprint_sha256="sha256:" + "0" * 64)),
             ]
             for name, mutate in mutations:
@@ -210,6 +203,23 @@ class NativeIdentityDemoTest(unittest.TestCase):
                     mutate(changed)
                     with self.assertRaises(existing_workspace.ExistingWorkspaceError):
                         existing_workspace.verify_runtime_state(self._api(changed, []), config, key)
+
+            # Even a well-formed, hash-matching customer-held edition must retain
+            # the fixed guard and witnessed operation required by this demo.
+            from allowly.policies import definition_digest
+            for name, mutate in (
+                ("wrong operation", lambda entry: entry["executable_operations"][0].update(operation_id="github.pull_requests.list")),
+                ("wrong evidence mode", lambda entry: entry["executable_operations"][0].update(minimum_evidence_mode="receipt")),
+                ("wrong resource", lambda entry: entry.update(guards={"resource_pattern": "*"})),
+                ("extra operation", lambda entry: entry["executable_operations"].append({**entry["executable_operations"][0], "operation_id": "github.pull_requests.list"})),
+            ):
+                with self.subTest(name=name):
+                    changed_config, changed = copy.deepcopy(config), copy.deepcopy(responses)
+                    mutate(changed_config["policy_definition"]["actions"][0])
+                    changed_config["policy_ref"]["definition_sha256"] = definition_digest(changed_config["policy_definition"])
+                    changed["/v1/authorizations"]["items"][0]["policy_ref"] = changed_config["policy_ref"]
+                    with self.assertRaises(existing_workspace.ExistingWorkspaceError):
+                        existing_workspace.verify_runtime_state(self._api(changed, []), changed_config, key)
 
 
     def test_unassigned_owner_requires_exact_snapshot_and_live_missing_binding(self):

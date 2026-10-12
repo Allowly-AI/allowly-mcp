@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import hashlib
 import hmac
 import io
@@ -11,23 +12,80 @@ import json
 import os
 import secrets
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
 import uuid
+import venv
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import existing_workspace
 import local_api
+import server
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from httpx import ASGITransport, AsyncClient
 from native_runner import _claimed_key_version, _fingerprint
 from server import HEADERS, TARGET_PATH, TARGET_QUERY, Demo, digest, now, verify_outcome_receipt
 from witness_config import TEST_KEY_VERSION, WORKSPACE_ID, workspace_key
+
+
+def retained_policy_fixture(agent_id: str, enabled_id: str, action: str) -> dict:
+    sdk_root = existing_workspace.ROOT.parent.parent / "allowly-sdk-python"
+    if str(sdk_root) not in sys.path:
+        sys.path.insert(0, str(sdk_root))
+    from allowly.policies import definition_digest, validate_policy_definition
+
+    definition = validate_policy_definition({
+        "profile": "allowly.policy.v1", "agent_id": agent_id, "default_expiry_days": 1,
+        "actions": [{
+            "policy": {"profile": "allowly.basic.v1", "action": action,
+                       "decision": "allow", "target": None,
+                       "fields": {}, "rules": []},
+            "guards": {"resource_pattern": "github:octocat/Hello-World"},
+            "executable_operations": [{
+                "enabled_executable_id": enabled_id, "provider_id": "github-rest",
+                "operation_id": "github.issues.list", "catalog_revision": "test_revision",
+                "definition_fingerprint": "sha256:" + "a" * 64,
+                "minimum_evidence_mode": "witnessed",
+            }],
+        }],
+    })
+    return {
+        "policy_definition": definition,
+        "policy_ref": {"policy_id": "retained_github_read", "policy_version": 1,
+                       "definition_sha256": definition_digest(definition)},
+    }
+
+
+class DemoInterpreterTest(unittest.TestCase):
+    def test_api_launcher_keeps_the_selected_virtual_environment(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            environment = directory / "venv"
+            venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
+            python = environment / "bin/python"
+            self.assertTrue(python.is_symlink())
+            public = ec.derive_private_key(1, ec.SECP256R1()).public_key()
+            helper_result = SimpleNamespace(stdout=json.dumps({"sec1_hex": public.public_bytes(
+                serialization.Encoding.X962, serialization.PublicFormat.CompressedPoint,
+            ).hex()}))
+            with patch.object(sys, "argv", ["server.py", "--local-test-signer",
+                    "--state-dir", str(directory / "state"), "--api-python", str(python)]), \
+                    patch.object(server.subprocess, "run", return_value=helper_result), \
+                    patch.object(server.subprocess, "Popen", side_effect=RuntimeError("captured local launch")) as launch:
+                with self.assertRaisesRegex(RuntimeError, "captured local launch"):
+                    server.main()
+            selected = launch.call_args.args[0][0]
+            launch.call_args.kwargs["stdout"].close()
+            self.assertEqual(selected, str(python.absolute()))
+            result = subprocess.run([selected, "-I", "-c", "import sys; print(sys.prefix)"],
+                                    check=True, capture_output=True, text=True)
+            self.assertEqual(Path(result.stdout.strip()), environment)
 
 
 class WitnessKeySelectionTest(unittest.TestCase):
@@ -73,6 +131,7 @@ class ExistingWorkspaceDemoTest(unittest.TestCase):
             "api_key": "test-runtime-key",
             "internal_token": "test-internal-token",
         }
+        config.update(retained_policy_fixture(config["agent_id"], config["enabled_executable_id"], "github.issues.list"))
         config_path = state / "config.json"
         config_path.write_text(json.dumps(config))
         config_path.chmod(0o600)
@@ -130,13 +189,7 @@ class ExistingWorkspaceDemoTest(unittest.TestCase):
             }
             authorization = {
                 "id": config["authorization_id"], "agent_id": config["agent_id"],
-                "actions": [{"name": "github.issues.list", "constraints": {
-                    "resource_pattern": "github:octocat/Hello-World"},
-                    "executable_operations": [{
-                        "enabled_executable_id": config["enabled_executable_id"],
-                        "operation_id": "github.issues.list",
-                        "minimum_evidence_mode": "witnessed",
-                    }]}],
+                "actions": ["github.issues.list"], "policy_ref": config["policy_ref"],
                 "authorization_provenance": {"protected_item": {
                     "id": config["agent_id"], "identity": identity,
                     "owner": {"status": "customer_declared", "account_user_id": "owner_1"},
@@ -164,6 +217,45 @@ class ExistingWorkspaceDemoTest(unittest.TestCase):
             binding["subject"] = "other@clients"
             with self.assertRaises(existing_workspace.ExistingWorkspaceError):
                 existing_workspace.verify_runtime_state(api, config, key)
+
+    def test_retained_material_is_required_and_cannot_rebind_to_latest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, private, key = self._files(Path(temporary))
+            for name in ("policy_ref", "policy_definition"):
+                changed = copy.deepcopy(private)
+                changed.pop(name)
+                path.write_text(json.dumps(changed))
+                with self.subTest(missing=name), self.assertRaises(existing_workspace.ExistingWorkspaceError):
+                    existing_workspace.load_config(path)
+            path.write_text(json.dumps(private))
+            config, _, _ = existing_workspace.load_config(path)
+            authorization = {"id": config["authorization_id"], "agent_id": config["agent_id"],
+                             "actions": ["github.issues.list"], "policy_ref": copy.deepcopy(config["policy_ref"])}
+            for reference in (
+                None, {**config["policy_ref"], "policy_version": True},
+                {**config["policy_ref"], "policy_version": 2},
+                {**config["policy_ref"], "policy_id": "a_new_latest_policy"},
+                {**config["policy_ref"], "definition_sha256": "0" * 64},
+                {**config["policy_ref"], "extra": "not_trusted"},
+            ):
+                authorization["policy_ref"] = reference
+                calls = []
+                def api(path, *, internal=False):
+                    calls.append((path, internal))
+                    return {"items": [authorization]}
+                with self.subTest(reference=reference), self.assertRaises(existing_workspace.ExistingWorkspaceError):
+                    existing_workspace.verify_runtime_state(api, config, key)
+                self.assertEqual(len(calls), 1, "Policy material failure must stop before identity or witness calls")
+            for mutate in (
+                lambda value: value["policy_definition"].update(agent_id="another_agent"),
+                lambda value: value["policy_definition"]["actions"][0]["guards"].update(resource_pattern="*"),
+                lambda value: value["policy_definition"].update(extra="not_supported"),
+            ):
+                changed = copy.deepcopy(private)
+                mutate(changed)
+                path.write_text(json.dumps(changed))
+                with self.assertRaises(existing_workspace.ExistingWorkspaceError):
+                    existing_workspace.load_config(path)
 
     def test_auth0_token_is_minted_inside_app_container_only(self):
         config = {"workspace_id": self.WORKSPACE_ID, "auth0_subject": "testmachine@clients",
@@ -339,7 +431,9 @@ class LocalApiWitnessFlowTest(unittest.TestCase):
             trust_path.write_text(json.dumps(trusted))
             trust_path.chmod(0o600)
             args = argparse.Namespace(
-                state_dir=state / "api", port=8811, repository="octocat/Hello-World",
+                state_dir=state / "api", port=8811,
+                opa_url=os.environ.get("ALLOWLY_OPA_URL", "http://127.0.0.1:8181"),
+                repository="octocat/Hello-World",
                 witness_url="wss://127.0.0.1:8810", notary_public_key=trust_path,
                 notary_fingerprint=fingerprint, verifier_bin=verifier,
                 witness_key_version=TEST_KEY_VERSION, witness_key_ref=key_ref,
@@ -351,6 +445,21 @@ class LocalApiWitnessFlowTest(unittest.TestCase):
             credentials = local_api.configure(args)
             config = await local_api.seed(args, credentials)
             self.assertEqual(config["witness_kms_key_ref"], key_ref)
+            from app.database import AsyncSessionLocal
+            from app.models import Authorization, ReceiptRecent
+            from app.services.authorization_policy import load_authorization_policy
+            from app.services.policy_versions import policy_reference
+            async with AsyncSessionLocal() as db:
+                authorization = await db.get(Authorization, config["authorization_id"])
+                self.assertEqual(authorization.actions, ["github.issues.list"])
+                policy = await load_authorization_policy(db, authorization)
+                self.assertEqual(config["policy_ref"], policy_reference(policy, workspace_id=WORKSPACE_ID))
+                self.assertEqual(authorization.policy_ref, config["policy_ref"])
+                self.assertEqual(config["policy_definition"], policy.policy_definition)
+                self.assertEqual(config["policy_ref"]["policy_version"], 1)
+                entry = policy.policy_definition["actions"][0]
+                self.assertEqual(entry["guards"], {"resource_pattern": "github:octocat/Hello-World"})
+                self.assertEqual(entry["executable_operations"][0]["minimum_evidence_mode"], "witnessed")
             with sqlite3.connect(state / "api/runtime.db") as database:
                 saved = database.execute(
                     "SELECT witness_kms_key_ref FROM workspaces WHERE id = ?", (WORKSPACE_ID,)
@@ -361,9 +470,12 @@ class LocalApiWitnessFlowTest(unittest.TestCase):
             original_active_key = execution_witness.active_key
             local_api.install_local_test_signer(args)
             try:
-                from app.main import app
+                from app.main import app, lifespan
 
-                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8811") as client:
+                async with lifespan(app), AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8811") as client:
+                    ready = await client.get("/readyz")
+                    self.assertEqual(ready.status_code, 200, ready.text)
+                    self.assertEqual(ready.json()["policy_evaluator"], "ok")
                     request = {
                         "method": "GET", "origin": "https://api.github.com", "path": TARGET_PATH,
                         "query": TARGET_QUERY, "body_size": 0, "body_sha256": digest(b""),
@@ -384,12 +496,26 @@ class LocalApiWitnessFlowTest(unittest.TestCase):
                         "client_timestamp": now(),
                     }
                     customer_headers = {"Authorization": "Bearer " + credentials["api_key"]}
+                    denied = await client.post("/v1/check", headers=customer_headers, json={
+                        "authorization_id": config["authorization_id"],
+                        "actions": ["github.issues.list"], "resource": "github:another/repository",
+                        "context": {},
+                    })
+                    self.assertEqual(denied.status_code, 200, denied.text)
+                    self.assertEqual(denied.json()["results"]["github.issues.list"]["decision"], "deny")
                     response = await client.post("/v1/execute", json=body, headers={
                         **customer_headers, "Idempotency-Key": "prepare-" + operation_id,
                     })
                     self.assertEqual(response.status_code, 201, response.text)
                     approval = response.json()
                     self.assertEqual(approval["decision"], "allow")
+                    self.assertEqual(approval["effective_evidence_mode"], "witnessed")
+                    self.assertEqual(approval["decision_receipt"]["status"], "pending")
+                    async with AsyncSessionLocal() as db:
+                        receipt = await db.get(ReceiptRecent, approval["decision_receipt"]["receipt_id"])
+                        self.assertEqual(receipt.payload["policy_ref"], config["policy_ref"])
+                        self.assertEqual(receipt.payload["policy_eval"]["result"]["decision"], "allow")
+                        self.assertIsNone(receipt.signature_value, "Unsigned demo receipts must remain disclosed as pending")
                     response = await client.post(
                         f"/v1/executions/{operation_id}/witness-session-token",
                         json={"approval_sha256": approval["approval_sha256"]}, headers=customer_headers,
@@ -421,6 +547,11 @@ class LocalApiWitnessFlowTest(unittest.TestCase):
                     self.assertEqual(_claimed_key_version(claim, key_ref), TEST_KEY_VERSION)
                     self.assertEqual(claim["trusted_notary_key_fingerprint_sha256"], fingerprint)
                     self.assertEqual(claim["workspace_id"], WORKSPACE_ID)
+                    self.assertEqual(claim["operation_id"], operation_id)
+                    self.assertEqual(claim["approval_sha256"], approval["approval_sha256"])
+                    self.assertEqual(claim["approval"], approval["approval"])
+                    self.assertEqual(claim["expected_server_name"], "api.github.com")
+                    self.assertEqual(claim["request_binding_verification"], "customer_held_bundle")
             finally:
                 execution_witness.active_key = original_active_key
                 from app.database import engine

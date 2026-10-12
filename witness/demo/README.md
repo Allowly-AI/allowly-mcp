@@ -37,15 +37,24 @@ running; Ctrl-C stops the page server, waits for any in-flight request to finish
 then stops its local API. Use the printed
 `127.0.0.1` address, because the demo rejects other Host headers.
 
-Prerequisites are the existing sibling `allowly-api/.venv`, the built
+Prerequisites are a running protected OPA daemon from the sibling API's
+`ops/opa/run-local.sh`, the existing sibling `allowly-api/.venv`, the built
 `target/release/allowly-witness-poc`, and this directory's `.venv` with its existing
-KMS dependencies. The test signer is opt-in; real KMS mode never falls back to
-it.
+KMS dependencies. OPA defaults to `http://127.0.0.1:8181`; select another
+protected loopback daemon with `--opa-url`. The demo checks real API readiness
+and never starts or stops OPA. Use `--api-python /absolute/path/to/python` when
+the sibling checkout has no installed API environment. There is no automatic
+fallback to a different API checkout. The test signer is opt-in; real KMS mode
+never falls back to it.
 
 The demo creates an **isolated** local Allowly installation on port 8811. It
 does not use or modify your existing dashboard database or the hosted API.
 The generated runtime API key and internal authentication secret stay in a
 private local directory; neither is sent to the browser or GitHub.
+The isolated seed creates one immutable retained policy edition and pins its
+exact `policy_ref` on a names-only grant. Executable and witness-mode pins and
+the resource guard live in that edition. State from an older inline-policy
+demo is refused; select a new private `--state-dir` instead of converting it.
 
 ## Use an existing local workspace
 
@@ -90,6 +99,8 @@ must come from that same local workspace. These field names are required:
   "authorization_id": "LOCAL_GITHUB_AUTHORIZATION_ID",
   "enabled_executable_id": "LOCAL_GITHUB_EXECUTABLE_ID",
   "agent_id": "YOUR_CONNECTED_AGENT_ID",
+  "policy_ref": {"policy_id": "YOUR_LOGICAL_POLICY_ID", "policy_version": 1, "definition_sha256": "64_lowercase_hex_characters"},
+  "policy_definition": {"profile": "allowly.policy.v1", "agent_id": "YOUR_CONNECTED_AGENT_ID", "actions": [], "default_expiry_days": 1},
   "auth0_subject": "MACHINE_CLIENT_ID@clients",
   "auth0_issuer": "https://YOUR_TENANT.us.auth0.com/",
   "auth0_audience": "https://allowly.ai/agent-identity",
@@ -101,6 +112,12 @@ must come from that same local workspace. These field names are required:
 ```
 
 Keep the file owner-only, for example `chmod 600 /private/path/demo-config.json`.
+Replace the illustrative empty `policy_definition.actions` above with the full
+retained edition from its creation, publication, or export record. The SDK
+validates its full shape and canonical digest, then preflight requires its exact
+reference to equal the live authorization's reference. Missing or changed
+material stops the run. This is a customer-held snapshot check, not a server
+read or offline replay claim; the adapter never substitutes the latest edition.
 Check the live setup without contacting GitHub:
 
 ```bash

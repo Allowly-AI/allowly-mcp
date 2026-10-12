@@ -310,11 +310,17 @@ class BridgeConfig:
             if not _is_literal_loopback(host):
                 raise ConfigurationError("fixture listener must bind to loopback")
         else:
-            kms_python = _existing_file(
-                values.get("ALLOWLY_WITNESS_KMS_PYTHON", str(project / ".venv/bin/python")),
+            python_invocation = values.get(
+                "ALLOWLY_WITNESS_KMS_PYTHON", str(project / ".venv/bin/python")
+            )
+            _existing_file(
+                python_invocation,
                 executable=True,
                 name="ALLOWLY_WITNESS_KMS_PYTHON",
             )
+            # A venv Python symlink must be invoked through the venv directory;
+            # its resolved base interpreter does not load the venv dependencies.
+            kms_python = pathlib.Path(python_invocation).expanduser().absolute()
             kms_helper = _existing_file(
                 values.get("ALLOWLY_WITNESS_KMS_HELPER", str(project / "kms/gcp_signer.py")),
                 executable=False,

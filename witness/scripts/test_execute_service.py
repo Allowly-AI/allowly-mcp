@@ -15,11 +15,13 @@ import json
 import os
 import pathlib
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import venv
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
@@ -800,6 +802,22 @@ class ConfigurationTests(unittest.TestCase):
         values = dict(self.base, ALLOWLY_WITNESS_LISTEN_ADDR="0.0.0.0:8765")
         with self.assertRaises(bridge.ConfigurationError):
             bridge.BridgeConfig.from_env(values)
+
+    def test_kms_python_preserves_real_venv_symlink_invocation(self):
+        directory = self.temp / "venv"
+        venv.EnvBuilder(with_pip=False, symlinks=True).create(directory)
+        python = directory / "bin/python"
+        self.assertTrue(python.is_symlink())
+        self.assertNotEqual(python, python.resolve())
+        configured = bridge.BridgeConfig.from_env(
+            dict(self.base, ALLOWLY_WITNESS_KMS_PYTHON=str(python))
+        )
+        self.assertEqual(configured.kms_python, python.absolute())
+        result = subprocess.run(
+            [str(configured.kms_python), "-I", "-c", "import sys; print(sys.prefix)"],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(pathlib.Path(result.stdout.strip()), directory)
 
     def test_fixture_is_explicit_and_rejects_production_signer_mix(self):
         values = dict(

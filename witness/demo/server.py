@@ -222,7 +222,7 @@ class Demo:
 
     def status(self):
         try:
-            self.api("/healthz")
+            self.api("/readyz")
             signer = "local test signer" if self.config["local_test_signer"] else "Cloud KMS"
             ready, detail = True, f"Local API connected. {signer} access is checked when witnessing starts."
         except (ApiFailure, ValueError):
@@ -716,6 +716,10 @@ def main():
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--port", type=int, default=8810)
     parser.add_argument("--api-port", type=int, default=8811)
+    parser.add_argument("--opa-url", default="http://127.0.0.1:8181",
+                        help="existing protected local OPA daemon for the isolated API")
+    parser.add_argument("--api-python", type=Path,
+                        help="explicit interpreter with the sibling API's installed dependencies")
     parser.add_argument("--kms-auth", choices=("gcloud", "adc"), default="gcloud")
     parser.add_argument("--kms-key-version", help="dedicated key version for ws_local_witness_demo")
     parser.add_argument("--trusted-key", type=Path, help="independently obtained public key JSON for the KMS version")
@@ -764,10 +768,12 @@ def main():
     fingerprint = _fingerprint(key)
     check_existing_state(state, key_ref, fingerprint, args.local_test_signer)
     save(trusted_key, key)
-    api_python = WORKSPACE / "allowly-api" / ".venv" / "bin" / "python"
+    api_python = (args.api_python or WORKSPACE / "allowly-api" / ".venv" / "bin" / "python").expanduser().absolute()
+    api_python.resolve(strict=True)  # Validate existence without losing the venv invocation path.
     api_log = (state / "local-api.log").open("ab")
     command = [str(api_python), str(ROOT / "demo" / "local_api.py"),
                "--state-dir", str(state / "api"), "--port", str(args.api_port),
+               "--opa-url", args.opa_url,
                "--witness-url", f"wss://127.0.0.1:{args.port}",
                "--notary-public-key", str(trusted_key), "--notary-fingerprint", fingerprint,
                "--witness-key-version", key_version,
