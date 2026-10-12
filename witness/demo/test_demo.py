@@ -431,7 +431,8 @@ class LocalApiWitnessFlowTest(unittest.TestCase):
             trust_path.write_text(json.dumps(trusted))
             trust_path.chmod(0o600)
             args = argparse.Namespace(
-                state_dir=state / "api", port=8811, opa_url="http://127.0.0.1:8181",
+                state_dir=state / "api", port=8811,
+                opa_url=os.environ.get("ALLOWLY_OPA_URL", "http://127.0.0.1:8181"),
                 repository="octocat/Hello-World",
                 witness_url="wss://127.0.0.1:8810", notary_public_key=trust_path,
                 notary_fingerprint=fingerprint, verifier_bin=verifier,
