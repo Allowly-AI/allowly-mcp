@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { decodeReceipt, loadKeysFromJson, verifyReceipt } from "@allowly/sdk";
 
-const vectors = JSON.parse(readFileSync(new URL("../../../allowly-receipt-format/vectors/policy/profile-v1.json", import.meta.url), "utf8"));
-describe("local verifier dependency", () => {
+const vectors = JSON.parse(readFileSync(new URL(import.meta.resolve("@allowly/verifier/vectors/policy/profile-v1.json")), "utf8"));
+describe("published verifier dependency", () => {
   it("uses the real SDK signature verifier for complete wire-5 OPA receipts", async () => {
     const keys = loadKeysFromJson(vectors.public_keys);
     const options = { expectedWorkspaceId: vectors.expected_workspace_id, trustedKeyFingerprints: new Set<string>(vectors.trusted_key_fingerprints), now: new Date(vectors.verification_now) };
