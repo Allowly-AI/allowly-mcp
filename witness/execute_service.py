@@ -18,6 +18,7 @@ import datetime as dt
 import hashlib
 import hmac
 import http
+import http.client
 import ipaddress
 import json
 import logging
@@ -1133,6 +1134,40 @@ async def _run(config: BridgeConfig) -> None:
                 loop.remove_signal_handler(signum)
 
 
+def _health_check(config: BridgeConfig) -> None:
+    host = config.listen_host
+    try:
+        address = ipaddress.ip_address(host)
+        if address.is_unspecified:
+            host = "::1" if address.version == 6 else "127.0.0.1"
+    except ValueError:
+        pass
+    if config.tls_cert_file is not None:
+        context = ssl.create_default_context(cafile=str(config.tls_cert_file))
+        context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+        # This local probe pins the configured leaf certificate instead of a
+        # public DNS name on a wildcard listener; TLS validity checks stay on.
+        context.check_hostname = False
+        pem = config.tls_cert_file.read_text().split("-----END CERTIFICATE-----", 1)[0]
+        expected = ssl.PEM_cert_to_DER_cert(pem + "-----END CERTIFICATE-----\n")
+        connection = http.client.HTTPSConnection(host, config.listen_port, timeout=2, context=context)
+    else:
+        expected = None
+        connection = http.client.HTTPConnection(host, config.listen_port, timeout=2)
+    try:
+        connection.connect()
+        if expected is not None and not hmac.compare_digest(
+            connection.sock.getpeercert(binary_form=True), expected
+        ):
+            raise ConfigurationError("health peer certificate differs from the configured certificate")
+        connection.request("GET", "/healthz")
+        response = connection.getresponse()
+        if response.status != 200 or response.read(16) != b"ok\n":
+            raise ConfigurationError("bridge is not healthy")
+    finally:
+        connection.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1141,10 +1176,18 @@ def main(argv: list[str] | None = None) -> int:
         help="explicit loopback-only fixture mode using the native local test key",
     )
     parser.add_argument("--log-level", choices=("WARNING", "INFO"), default="INFO")
+    parser.add_argument("--health-check", action="store_true", help="probe the configured local listener")
     args = parser.parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s %(message)s")
     try:
         config = BridgeConfig.from_env(test_fixture=args.test_fixture)
+        if args.health_check:
+            try:
+                _health_check(config)
+            except (OSError, ValueError, http.client.HTTPException):
+                LOG.error("event=health_check_failed")
+                return 1
+            return 0
         asyncio.run(_run(config))
     except ConfigurationError as exc:
         LOG.error("event=configuration_failed reason=%s", exc)

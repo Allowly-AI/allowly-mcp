@@ -21,7 +21,7 @@ LABEL org.opencontainers.image.revision=$GIT_SHA \
       allowly.witness_claim_protocol=workspace-kms-v1
 
 HEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=3 \
-  CMD python -c 'import urllib.request; r = urllib.request.urlopen("http://127.0.0.1:8765/healthz", timeout=2); assert r.status == 200 and r.read(16) == b"ok\n"' || exit 1
+  CMD ["python", "/app/execute_service.py", "--health-check"]
 
 ENV ALLOWLY_WITNESS_NATIVE_BIN=/usr/local/bin/allowly-witness-poc \
     ALLOWLY_WITNESS_KMS_PYTHON=/usr/local/bin/python \

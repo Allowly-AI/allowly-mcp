@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import copy
 import hashlib
 import hmac
@@ -20,14 +21,15 @@ import unittest
 import uuid
 import venv
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import existing_workspace
 import local_api
 import server
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from httpx import ASGITransport, AsyncClient
 from native_runner import _claimed_key_version, _fingerprint
 from server import HEADERS, TARGET_PATH, TARGET_QUERY, Demo, digest, now, verify_outcome_receipt
@@ -323,6 +325,26 @@ class ExistingWorkspaceDemoTest(unittest.TestCase):
             self.assertEqual(request.get_header("X-allowly-internal-signature"), expected)
 
     def test_signed_after_receipt_must_link_to_decision_and_observed_response(self):
+        from allowly.verify import hash_seal_value, load_keys_from_json, verify_receipt, VerificationError
+        from allowly_receipt_format import canonicalize, jws_signing_input
+
+        vectors_root = existing_workspace.ROOT.parent.parent / "allowly-receipt-format"
+        vectors = json.loads((vectors_root / "test-vectors.json").read_text())
+        seal_vectors = json.loads((vectors_root / "vectors/seal/verification-v1.json").read_text())
+        keys = load_keys_from_json(vectors["public_keys"])
+        workspace_id = vectors["public_keys"]["workspace_id"]
+        original = vectors["should_verify"][0]["receipt"]
+        decision_claims = verify_receipt(original, keys, expected_workspace_id=workspace_id)
+        outcome_claims = verify_receipt(seal_vectors["should_verify"][0]["receipt"], keys,
+                                        expected_workspace_id=workspace_id)
+
+        def signed(claims):
+            # Public deterministic vector key; new synthetic receipts, never edit signed vectors.
+            encode = lambda value: base64.urlsafe_b64encode(value).decode().rstrip("=")
+            return {"protected": original["protected"], "payload": encode(canonicalize(claims)),
+                    "signature": encode(Ed25519PrivateKey.from_private_bytes(bytes(32)).sign(
+                        jws_signing_input(claims, "test-key/v1")))}
+
         with tempfile.TemporaryDirectory() as temporary:
             proof_dir = Path(temporary) / "witness"
             proof_dir.mkdir()
@@ -344,39 +366,40 @@ class ExistingWorkspaceDemoTest(unittest.TestCase):
                 operation_id="op_1", request_descriptor=SimpleNamespace(authorization_id="auth_1"),
                 approval_sha256="sha256:approval", destination_id="exe_1",
                 action="github.issues.list", request_fingerprint="sha256:request",
-                outcome_evidence=SimpleNamespace(record=record, record_sha256="a" * 64),
+                outcome_evidence=SimpleNamespace(record=record, record_sha256=hash_seal_value(record)),
             )
+            decision_claims.update(receipt_id="rcp_before", authorization_id="auth_1",
+                                   action="github.issues.list")
             decision = {
-                "approval": {"workspace_id": self.WORKSPACE_ID, "operation_id": "op_1",
+                "approval": {"workspace_id": workspace_id, "operation_id": "op_1",
                              "authorization_id": "auth_1", "action": "github.issues.list",
                              "executable": {"enabled_executable_id": "exe_1",
                                             "catalog_operation_id": "github.issues.list"}},
                 "approval_sha256": "sha256:approval",
-                "decision_receipt": {"receipt_id": "rcp_before"},
+                "decision_receipt": signed(decision_claims),
                 "decision_receipt_verified": True,
             }
-            receipt = {"receipt_id": "rcp_after",
-                       "context": {"seal_origin": "allowly.execution.outcome.v1"}}
+            outcome_claims.update(receipt_id="rcp_after", authorization_id="auth_1")
+            outcome_claims["context"].update(
+                seal_origin="allowly.execution.outcome.v1", record_sha256=hash_seal_value(record))
+            receipt = signed(outcome_claims)
+            originals = copy.deepcopy((decision["decision_receipt"], receipt))
             response = {"status": 200, "body_sha256": "sha256:body"}
-            verifier = ModuleType("allowly.verify")
-            verifier.hash_seal_value = lambda _record: "a" * 64
-            verifier.verify_seal_value = lambda *_args, **_kwargs: SimpleNamespace(
-                signature_verified=True, record_matches=True,
-            )
 
             def verify():
                 verify_outcome_receipt(
-                    execution, receipt, [], workspace_id=self.WORKSPACE_ID,
+                    execution, receipt, keys, workspace_id=workspace_id,
                     decision_package=decision, expected_receipt_id="rcp_after",
                     response=response, operation_dir=temporary,
                 )
 
-            with patch.dict(sys.modules, {"allowly": ModuleType("allowly"), "allowly.verify": verifier}):
+            with self.subTest("original JWS receipts verify and remain unchanged"):
                 verify()
-                execution.outcome_evidence.record_sha256 = "sha256:" + "a" * 64
+                self.assertEqual((decision["decision_receipt"], receipt), originals)
+                execution.outcome_evidence.record_sha256 = "sha256:" + hash_seal_value(record)
                 with self.assertRaisesRegex(ValueError, "does not bind"):
                     verify()
-                execution.outcome_evidence.record_sha256 = "a" * 64
+                execution.outcome_evidence.record_sha256 = hash_seal_value(record)
                 decision["approval_sha256"] = "sha256:other"
                 with self.assertRaisesRegex(ValueError, "do not identify"):
                     verify()
@@ -389,23 +412,90 @@ class ExistingWorkspaceDemoTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "does not bind"):
                     verify()
                 decision["approval"]["executable"]["catalog_operation_id"] = "github.issues.list"
-                receipt["context"].pop("seal_origin")
+                outcome_claims["context"].pop("seal_origin")
+                receipt = signed(outcome_claims)
                 with self.assertRaisesRegex(ValueError, "do not identify"):
                     verify()
-                receipt["context"]["seal_origin"] = "allowly.execution.outcome.v1"
-                receipt["receipt_id"] = "rcp_other"
+                outcome_claims["context"]["seal_origin"] = "allowly.execution.outcome.v1"
+                outcome_claims["receipt_id"] = "rcp_other"
+                receipt = signed(outcome_claims)
                 with self.assertRaisesRegex(ValueError, "do not identify"):
                     verify()
-                receipt["receipt_id"] = "rcp_after"
+                outcome_claims["receipt_id"] = "rcp_after"
+                receipt = signed(outcome_claims)
                 record["witness"]["evidence_bundle_sha256"] = digest(b"other")
+                execution.outcome_evidence.record_sha256 = hash_seal_value(record)
+                outcome_claims["context"]["record_sha256"] = hash_seal_value(record)
+                receipt = signed(outcome_claims)
                 with self.assertRaisesRegex(ValueError, "does not bind"):
                     verify()
                 record["witness"]["evidence_bundle_sha256"] = digest(b"proof")
-                verifier.verify_seal_value = lambda *_args, **_kwargs: SimpleNamespace(
-                    signature_verified=False, record_matches=True,
-                )
-                with self.assertRaisesRegex(ValueError, "does not match"):
+                execution.outcome_evidence.record_sha256 = hash_seal_value(record)
+                outcome_claims["context"]["record_sha256"] = hash_seal_value(record)
+                receipt = signed(outcome_claims)
+                receipt["signature"] = "A" * 86
+                with self.assertRaises(VerificationError):
                     verify()
+                receipt = signed(outcome_claims)
+                with self.assertRaises(VerificationError):
+                    verify_outcome_receipt(
+                        execution, receipt, keys, workspace_id="ws_other",
+                        decision_package=decision, expected_receipt_id="rcp_after",
+                        response=response, operation_dir=temporary,
+                    )
+                decision["decision_receipt"]["signature"] = "A" * 86
+                with self.assertRaises(VerificationError):
+                    verify()
+
+            decision["decision_receipt"] = signed(decision_claims)
+            execution.decision = "allow"
+            execution.evidence_state = "customer_held_witness_bundle"
+            response["body"] = "[]"
+            result = SimpleNamespace(execution=execution, operation_dir=temporary,
+                                     response=response, outcome_pending=False)
+
+            class Client:
+                def __init__(self, *_args, **_kwargs):
+                    self.receipts = self
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_args):
+                    pass
+
+                async def execute_http(self, *_args, **_kwargs):
+                    return result
+
+                async def fetch_signed(self, receipt_id):
+                    self_id = verify_receipt(receipt, keys, expected_workspace_id=workspace_id)["receipt_id"]
+                    if receipt_id != self_id:
+                        raise AssertionError("The requested outcome ID must match its signed receipt")
+                    return receipt
+
+            trust = Path(temporary) / "trusted.json"
+            trust.write_text("{}")
+            config = {"identity_provider": "allowly", "workspace_id": workspace_id,
+                      "api_base_url": "http://127.0.0.1:8085", "authorization_id": "auth_1",
+                      "enabled_executable_id": "exe_1", "policy_resource": "github:octocat/Hello-World"}
+            for status in ("pending", "signed"):
+                with self.subTest(outcome_envelope=status):
+                    execution.outcome_evidence.receipt = SimpleNamespace(
+                        status=status, receipt_id="rcp_after", receipt=receipt)
+                    demo = Demo(Path(temporary), config, {"api_key": "test-key"}, trust,
+                                "gcloud", Path("unused"), sdk_wss=True)
+                    demo.api = lambda _path: vectors["public_keys"]
+                    demo.runs[status] = {"events": [], "timings_ms": {}}
+                    with (patch("allowly.Allowly", Client),
+                          patch("allowly.execution.complete_execution_evidence", AsyncMock(return_value=decision)),
+                          patch("server.verify_runtime_state"),
+                          patch("server.load_native_credential", return_value=SimpleNamespace(token=lambda: "test-token")),
+                          patch("server.asdict", return_value={})):
+                        demo.run_sdk_wss(status)
+                    self.assertEqual(demo.snapshot(status)["receipt_state"], "verified", demo.snapshot(status))
+                    saved = Path(temporary) / "runs" / status
+                    self.assertEqual(json.loads((saved / "decision-receipt.json").read_text()), decision["decision_receipt"])
+                    self.assertEqual(json.loads((saved / "outcome-receipt.json").read_text()), receipt)
 
 
 class LocalApiWitnessFlowTest(unittest.TestCase):
