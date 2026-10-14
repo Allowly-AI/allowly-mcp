@@ -169,6 +169,13 @@ Browser origins are rejected; the native customer client does not send an
 `Origin` header. `/healthz` returns `200` while accepting sessions and `503`
 while draining, so a load balancer can stop new routing before shutdown.
 
+The image's health check uses the same listener and TLS configuration as the
+service. Wildcard binds are probed through local loopback. For direct TLS, the
+probe verifies TLS validity and pins the exact configured leaf certificate,
+instead of requiring its public DNS name to match the loopback address. A
+different or expired certificate fails the check. It makes no runtime claim or
+KMS call. Run the same check manually with `python3 execute_service.py --health-check`.
+
 ## Shutdown and failure behavior
 
 `SIGTERM` and `SIGINT` stop the listener. Connections that have not begun a

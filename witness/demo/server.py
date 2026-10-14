@@ -81,7 +81,7 @@ def check_existing_state(state, key_ref, fingerprint, local_test_signer):
 def verify_outcome_receipt(execution, receipt, public_keys, *, workspace_id, decision_package,
                            expected_receipt_id, response, operation_dir):
     """Check the signed after record against this exact witnessed GitHub call."""
-    from allowly.verify import hash_seal_value, verify_seal_value
+    from allowly.verify import hash_seal_value, verify_receipt, verify_seal_value
 
     evidence = execution.outcome_evidence
     if evidence is None or not isinstance(evidence.record, dict):
@@ -89,13 +89,15 @@ def verify_outcome_receipt(execution, receipt, public_keys, *, workspace_id, dec
     record = evidence.record
     approval = decision_package.get("approval")
     decision_receipt = decision_package.get("decision_receipt")
+    decision_claims = verify_receipt(decision_receipt, public_keys, expected_workspace_id=workspace_id)
+    outcome_claims = verify_receipt(receipt, public_keys, expected_workspace_id=workspace_id)
     decision_hash = decision_package.get("approval_sha256")
     approved_executable = approval.get("executable") if isinstance(approval, dict) else None
     if (not isinstance(approval, dict) or not isinstance(decision_receipt, dict)
             or not isinstance(receipt, dict)
             or decision_package.get("decision_receipt_verified") is not True
-            or not isinstance(decision_receipt.get("receipt_id"), str)
-            or not decision_receipt["receipt_id"]
+            or not isinstance(decision_claims.get("receipt_id"), str)
+            or not decision_claims["receipt_id"]
             or not isinstance(expected_receipt_id, str)
             or not expected_receipt_id
             or approval.get("workspace_id") != workspace_id
@@ -107,9 +109,9 @@ def verify_outcome_receipt(execution, receipt, public_keys, *, workspace_id, dec
             or not isinstance(approved_executable.get("catalog_operation_id"), str)
             or not approved_executable["catalog_operation_id"]
             or decision_hash != execution.approval_sha256
-            or receipt.get("receipt_id") != expected_receipt_id
-            or not isinstance(receipt.get("context"), dict)
-            or receipt["context"].get("seal_origin") != "allowly.execution.outcome.v1"):
+            or outcome_claims.get("receipt_id") != expected_receipt_id
+            or not isinstance(outcome_claims.get("context"), dict)
+            or outcome_claims["context"].get("seal_origin") != "allowly.execution.outcome.v1"):
         raise ValueError("The receipts do not identify this execution")
 
     proof_dir = Path(operation_dir) / "witness"
@@ -131,7 +133,7 @@ def verify_outcome_receipt(execution, receipt, public_keys, *, workspace_id, dec
             or record.get("type") != "execution.outcome"
             or record.get("operation_id") != execution.operation_id
             or record.get("authorization_id") != execution.request_descriptor.authorization_id
-            or record.get("decision_receipt_id") != decision_receipt.get("receipt_id")
+            or record.get("decision_receipt_id") != decision_claims.get("receipt_id")
             or record.get("approval_sha256") != decision_hash
             or record.get("destination_id") != execution.destination_id
             or record.get("catalog_operation_id") != approved_executable.get("catalog_operation_id")
@@ -511,7 +513,7 @@ class Demo:
             receipt_verified = False
             try:
                 from allowly.execution import complete_execution_evidence
-                from allowly.verify import load_keys_from_json
+                from allowly.verify import load_keys_from_json, verify_receipt
 
                 keys_doc = self.api(f"/v1/workspaces/{self.config['workspace_id']}/keys")
                 public_keys = load_keys_from_json(keys_doc)
@@ -542,7 +544,10 @@ class Demo:
                         )
                         envelope = result.execution.outcome_evidence.receipt
                         expected_outcome_id = (envelope.receipt_id if envelope.status == "pending"
-                                               else envelope.receipt.get("receipt_id"))
+                                               else verify_receipt(
+                                                   envelope.receipt, public_keys,
+                                                   expected_workspace_id=self.config["workspace_id"],
+                                               )["receipt_id"])
                         verify_outcome_receipt(
                             result.execution, outcome_receipt, public_keys,
                             workspace_id=self.config["workspace_id"],

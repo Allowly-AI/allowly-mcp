@@ -14,6 +14,7 @@ import http.server
 import json
 import os
 import pathlib
+import ssl
 import stat
 import subprocess
 import sys
@@ -866,6 +867,90 @@ class ConfigurationTests(unittest.TestCase):
         )
         with self.assertRaises(bridge.ConfigurationError):
             bridge.RuntimeClaimClient(configured)
+
+    def test_container_health_command_honors_port_tls_and_exact_certificate(self):
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        command = (ROOT / "Dockerfile.bridge").read_text().split("HEALTHCHECK", 1)[1].split("CMD ", 1)[1].splitlines()[0]
+        arguments = json.loads(command)
+        arguments[0] = sys.executable
+        arguments = [str(ROOT / "execute_service.py") if value == "/app/execute_service.py" else value
+                     for value in arguments]
+
+        class Health(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(self.health_status if self.path == "/healthz" else 404)
+                self.end_headers()
+                self.wfile.write(self.health_body)
+
+            def log_message(self, *_args):
+                pass
+
+        ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "health-test-ca")])
+        current = dt.datetime.now(dt.timezone.utc)
+        ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name)
+              .public_key(ca_key.public_key()).serial_number(x509.random_serial_number())
+              .not_valid_before(current - dt.timedelta(days=2)).not_valid_after(current + dt.timedelta(days=2))
+              .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+              .sign(ca_key, hashes.SHA256()))
+
+        def certificate(name, *, expired=False):
+            key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            cert = (x509.CertificateBuilder().subject_name(x509.Name([
+                x509.NameAttribute(NameOID.COMMON_NAME, "witness.example.test")]))
+                .issuer_name(ca_name).public_key(key.public_key()).serial_number(x509.random_serial_number())
+                .not_valid_before(current - dt.timedelta(days=1))
+                .not_valid_after(current - dt.timedelta(hours=1) if expired else current + dt.timedelta(days=1))
+                .add_extension(x509.SubjectAlternativeName([x509.DNSName("witness.example.test")]), critical=False)
+                .sign(ca_key, hashes.SHA256()))
+            cert_path, key_path = self.temp / (name + ".pem"), self.temp / (name + ".key")
+            cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM) + ca.public_bytes(serialization.Encoding.PEM))
+            key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                  serialization.NoEncryption()))
+            return cert_path, key_path
+
+        expected_cert, expected_key = certificate("expected")
+        expected_leaf = self.temp / "expected-leaf.pem"
+        expected_leaf.write_text(expected_cert.read_text().split("-----END CERTIFICATE-----", 1)[0]
+                                 + "-----END CERTIFICATE-----\n")
+        other_cert, other_key = certificate("other")
+        expired_cert, expired_key = certificate("expired", expired=True)
+        for served, configured, expected_returncode, status, body in (
+            (None, None, 0, 200, b"ok\n"),
+            ((expected_cert, expected_key), (expected_cert, expected_key), 0, 200, b"ok\n"),
+            ((expected_cert, expected_key), (expected_leaf, expected_key), 0, 200, b"ok\n"),
+            ((other_cert, other_key), (expected_cert, expected_key), 1, 200, b"ok\n"),
+            ((expired_cert, expired_key), (expired_cert, expired_key), 1, 200, b"ok\n"),
+            (None, None, 1, 503, b"draining\n"),
+            (None, None, 1, 200, b"wrong\n"),
+        ):
+            with self.subTest(tls=bool(served), expected_returncode=expected_returncode, status=status):
+                Health.health_status, Health.health_body = status, body
+                server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Health)
+                if served:
+                    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                    context.load_cert_chain(*served)
+                    server.socket = context.wrap_socket(server.socket, server_side=True)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                values = {**os.environ, **self.base,
+                          "ALLOWLY_WITNESS_LISTEN_ADDR": f"{'0.0.0.0' if served else '127.0.0.1'}:{server.server_port}"}
+                for name in ("ALLOWLY_WITNESS_TLS_CERT_FILE", "ALLOWLY_WITNESS_TLS_KEY_FILE"):
+                    values.pop(name, None)
+                if configured:
+                    values.update(ALLOWLY_WITNESS_TLS_CERT_FILE=str(configured[0]),
+                                  ALLOWLY_WITNESS_TLS_KEY_FILE=str(configured[1]))
+                try:
+                    result = subprocess.run(arguments, env=values, capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, expected_returncode, result.stderr)
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=5)
 
 
 if __name__ == "__main__":

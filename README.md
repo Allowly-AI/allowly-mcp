@@ -242,8 +242,8 @@ and source control. The webhook path and retry rules are documented at
 By default, the middleware does not trust tool arguments for identity. Provide `userIdFn` and read identity from the MCP handler's trusted `extra` context, such as `extra.authInfo` or `extra.sessionId`.
 ## Development dependencies
 
-This local OPA checkout links to the sibling SDK source and its unpublished
-verifier 5.0.0 build. Receipt verification accepts wire 5 only. Signature checks
+The MCP package uses SDK 0.8.0 and verifier 5.0.0 from the
+registry-backed lockfile. Receipt verification accepts wire 5 only. Signature checks
 do not replay policy or prove that a provider request happened. Native OPA
 replay is a separate check with the retained policy, input, and engine artifacts.
-Do not publish with sibling-file development links.
+Sibling-file links are for local development only; do not publish with them.
