@@ -4,26 +4,22 @@ One Allowly MCP package for checked tools and customer-side Execute.
 
 Use this package when you already have an MCP server and want each tool call to pass through Allowly before the tool runs. The MCP tool name is the default action name. Use `checkInputFn` when your policy needs a different action, resource, or selected input fields.
 
-This is the TypeScript MCP integration, separate from `@allowly/sdk` because npm has no extras. The Python check-only equivalent ships inside the Python SDK as `allowly[fastmcp]`. There is no separate TLSNotary MCP package.
+This is the TypeScript MCP integration, separate from `@allowly/sdk` because npm has no extras. The Python check-only equivalent ships inside the Python SDK as `allowly[fastmcp]`.
 
-Local Execute tools support two evidence modes:
-
-- `receipt`: an Allowly decision before the call and a signed customer-reported outcome after it.
-- `witnessed`: the same before/after flow, plus a live TLS witness during the provider exchange.
+Local Execute tools use `receipt`: an Allowly decision before the call and a
+signed customer-reported outcome after it.
 
 Ordinary tools wrapped with `attach()` still use the before-only `/check` flow.
 
 ## Install
 
 ```bash
-npm install @allowly/mcp @allowly/sdk @modelcontextprotocol/sdk zod
+npm install @allowly/mcp@0.5.1 @allowly/sdk@^0.8.0 @modelcontextprotocol/sdk zod
 ```
 
 `@allowly/mcp` is ESM-only and requires Node.js 20 or newer.
 
-Receipt mode needs no native executable. Witnessed mode also needs the optional
-Rust helper installed on the MCP host through `allowly setup witness`; it is not
-another MCP package. See [Witness setup](#witness-setup) below.
+Receipt mode needs no native executable.
 
 ## Usage
 
@@ -148,11 +144,8 @@ authenticated principal and immutable order ID, so retrying the same order
 cannot choose a new ID. The SDK's local journal prevents a second provider
 dispatch for that ID. A `not_allowed`,
 `unknown`, or failed result is an MCP error. Do not retry an `unknown` result
-under a new ID. For witnessed mode, set `evidenceMode: "witnessed"` and provide
-`witnessFn`, returning a fresh evidence directory for that operation. The SDK
-fails closed if the policy requires a witness and none is configured. Receipt
-mode signs the customer runtime's reported HTTP outcome; it has no independent
-witness of the provider response.
+under a new ID. Receipt mode signs the customer runtime's reported HTTP
+outcome; it does not independently observe the provider response.
 
 An observed 2xx provider response remains a successful MCP result when its
 outcome upload is pending. That result has `outcomePending: true` and
@@ -161,72 +154,7 @@ ID to retry the saved report without sending another provider request. Provider
 response bytes are available only on the call that observed them, not a journal
 retry.
 
-For the same registered tool, replace the receipt setting with:
-
-```ts
-evidenceMode: "witnessed",
-witnessFn: (_args, operationId) => ({
-  evidenceDirectory: `/var/lib/my-mcp/allowly-evidence/${operationId}`,
-}),
-```
-
-Use a safe server-derived operation ID and a new evidence directory for each
-logical operation. Keep the full witness evidence private: it can include
-provider credentials and response data. Neither mode proves business completion
-or that the customer has closed every alternative route to the provider.
-
-## Witness setup
-
-After installing `@allowly-ai/cli` and running `allowly login` for this workspace,
-choose one install path on the trusted MCP host:
-
-```bash
-# Download the checksum-verified helper; no Rust toolchain needed.
-allowly setup witness
-
-# Download reviewed adapter source, fetch pinned official TLSNotary, and build locally.
-allowly setup witness --build-from-source
-```
-
-The source path needs Rust 1.95.0, Cargo, Git, Bash, and a native C build toolchain.
-The helper is Allowly's Rust adapter around unchanged TLSNotary libraries, pinned
-to `v0.1.0-alpha.15` / `47aee45b53e06648c1b2ad3689b367b8c923fdec`.
-It is not an upstream TLSNotary executable renamed by Allowly.
-
-The current CLI defaults to `witness-v0.1.1` in `Allowly-AI/allowly-mcp`.
-It verifies a pinned SHA-256 digest for `SHA256SUMS`, then checks the selected
-archive before running or building it. Missing assets or checksum mismatches
-stop setup; there is no unverified fallback. This local rebuild does not
-establish remote asset availability or a tested fresh archive installation.
-You can also use a reviewed offline archive or helper:
-
-```bash
-allowly setup witness --archive /path/to/allowly-witness-poc-0.1.1-<target>.tar.gz --sha256 <archive-sha256>
-allowly setup witness --helper /absolute/path/to/allowly-witness-poc
-```
-
-Supported hosts are macOS and glibc Linux, on arm64 or x64. Setup opens the
-authenticated workspace key page. Compare the complete public-key fingerprint
-and confirm it in the terminal. The CLI saves only the helper path, public key,
-workspace ID, and confirmed fingerprint. It downloads no private witness key.
-The SDK reads that workspace setup when `witnessFn` provides the evidence path.
-For a development witness with a private CA, also use
-`--witness-ca-cert /absolute/path/to/ca.pem`; this trust applies only to the
-witness socket, not provider HTTPS.
-
-## Native helper and Witness Bridge source
-
-This repo owns both implementations under [`witness/`](witness/). They share
-the pinned TLSNotary dependency and Allowly execution protocol:
-
-- [`witness/EXECUTE.md`](witness/EXECUTE.md): customer helper and native profile limits.
-- [`witness/EXECUTE_SERVICE.md`](witness/EXECUTE_SERVICE.md): Allowly-hosted Witness Bridge, the live witnessing socket/service.
-- [`witness/DISTRIBUTION.md`](witness/DISTRIBUTION.md): binary/source release packaging and checksum checks.
-
-Customer setup installs only the helper. The bridge remains separate Allowly
-infrastructure with its own TLS route and witness-only signing identity; it is
-not started by `npm install` or `allowly setup witness`. Keeping its source in
-this repo does not combine customer and server credentials or deployment roles.
+A reported provider response does not independently prove execution or business completion. The customer must close every alternative provider route.
 
 ## SEAL evidence is explicit
 
@@ -242,8 +170,9 @@ and source control. The webhook path and retry rules are documented at
 By default, the middleware does not trust tool arguments for identity. Provide `userIdFn` and read identity from the MCP handler's trusted `extra` context, such as `extra.authInfo` or `extra.sessionId`.
 ## Development dependencies
 
-The MCP package uses SDK 0.8.0 and verifier 5.0.0 from the
-registry-backed lockfile. Receipt verification accepts wire 5 only. Signature checks
+Published MCP 0.5.1 uses SDK 0.8.x. This development source requires SDK 0.9.x
+and uses SDK 0.9.0 and verifier 5.0.0 from the registry-backed lockfile.
+Receipt verification accepts wire 5 only. Signature checks
 do not replay policy or prove that a provider request happened. Native OPA
 replay is a separate check with the retained policy, input, and engine artifacts.
 Sibling-file links are for local development only; do not publish with them.
